@@ -7,6 +7,22 @@ pub trait Parser<T>: Sized {
     // {
     //     AndThen(self, another)
     // }
+
+    /// p*
+    fn many(self) -> Many<Self> {
+        Many(self)
+    } // 我以为many: Parser<char> -> Parser<String>是不可能的……
+
+    /// p+
+    fn many1(self) -> Many1<Self> {
+        Many1(self)
+    }
+
+    /// a <|> b
+    fn choice<P>(self, another: P) -> Choice<Self, P> {
+        // Haskell parsec里的<|>似乎默认是不回溯的
+        Choice(self, another)
+    }
 }
 
 struct Any;
@@ -21,9 +37,11 @@ impl Parser<char> for Any {
     }
 }
 
+/// .
 pub fn any() -> impl Parser<char> {
     Any // 其实这是个unit type，根本不占空间，我怀疑这里会自动优化
-        // Satisfy(|c: &char| true) // 也可以用Satisfy构造，但是语义上要占用一个closure的空间
+
+    // Satisfy(|c: &char| true) // 也可以用Satisfy构造，但是语义上要占用一个closure的空间
 }
 
 struct Eof;
@@ -105,6 +123,10 @@ pub fn one_of<'a>(array: &'a [char]) -> impl Parser<char> + 'a {
     satisfy(move |c| array.contains(c)) // 一定要move，array需要移动到closure里面
 }
 
+pub fn none_of<'a>(array: &'a [char]) -> impl Parser<char> + 'a {
+    satisfy(move |c| !array.contains(c))
+}
+
 struct Str<'a>(&'a str);
 
 impl<'b> Parser<&'b str> for Str<'b> {
@@ -127,7 +149,7 @@ pub fn string(pattern: &str) -> impl Parser<&str> {
     Str(pattern)
 }
 
-struct Many<P>(P);
+pub struct Many<P>(P);
 
 // impl<P, T> Parser<&[T]> for Many<P> where P: Parser<T> {
 //     fn parse<'a>(&self, input: &'a str) -> Option<(&[T], &'a str)> {
@@ -155,8 +177,52 @@ where
     }
 }
 
-pub fn many<'a>(parser: impl Parser<char>) -> impl Parser<String> {
-    Many(parser)
+// pub fn many<'a>(parser: impl Parser<char>) -> impl Parser<String> {
+//     Many(parser)
+// }
+// 移动到了Parser trait里
+
+pub struct Many1<P>(P);
+
+impl<P> Parser<String> for Many1<P>
+where
+    P: Parser<char>,
+{
+    fn parse<'a>(&self, input: &'a str) -> Option<(String, &'a str)> {
+        let mut input = input;
+        let mut target = String::new();
+
+        loop {
+            if let Some((c, remaining)) = self.0.parse(input) {
+                input = remaining;
+                target.push(c);
+            } else {
+                break if target.is_empty() {
+                    None
+                } else {
+                    Some((target, input))
+                };
+            }
+        }
+    }
+}
+
+pub struct Choice<P1, P2>(P1, P2);
+
+impl<T, P1, P2> Parser<T> for Choice<P1, P2>
+where
+    P1: Parser<T>,
+    P2: Parser<T>,
+{
+    fn parse<'a>(&self, input: &'a str) -> Option<(T, &'a str)> {
+        if let Some((a, remaining)) = self.0.parse(input) {
+            Some((a, remaining))
+        } else if let Some((b, remaining)) = self.1.parse(input) {
+            Some((b, remaining))
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -249,6 +315,20 @@ mod tests {
     }
 
     #[test]
+    fn none_of_parse_succeed() {
+        let input = "c";
+        let parser = none_of(&['x', 'y', 'z']);
+        assert_eq!(dbg!(parser.parse(input)), Some(('c', "")));
+    }
+
+    #[test]
+    fn none_of_parse_fail() {
+        let input = "c";
+        let parser = none_of(&['a', 'b', 'c']);
+        assert_eq!(dbg!(parser.parse(input)), None);
+    }
+
+    #[test]
     fn string_parse_succeed() {
         let input = "prefixaaaa";
         let parser = string("prefix");
@@ -259,7 +339,55 @@ mod tests {
     fn many_parse_number() {
         let input = "1234";
         let digit = satisfy(|c| c.is_digit(10));
-        let parser = many(digit);
+        let parser = digit.many();
         assert_eq!(dbg!(parser.parse(input)), Some(("1234".to_owned(), "")));
+    }
+
+    #[test]
+    fn many_parse_number_prefix() {
+        let input = "1234abc";
+        let digit = satisfy(|c| c.is_digit(10));
+        let parser = digit.many();
+        assert_eq!(dbg!(parser.parse(input)), Some(("1234".to_owned(), "abc")));
+    }
+
+    #[test]
+    fn many_parse_number_fail() {
+        let input = "abc";
+        let digit = satisfy(|c| c.is_digit(10));
+        let parser = digit.many();
+        assert_eq!(dbg!(parser.parse(input)), Some(("".to_owned(), "abc")));
+    }
+
+    #[test]
+    fn many1_parse_number() {
+        let input = "1abc";
+        let digit = satisfy(|c| c.is_digit(10));
+        let parser = digit.many1();
+        assert_eq!(dbg!(parser.parse(input)), Some(("1".to_owned(), "abc")));
+    }
+
+    #[test]
+    fn many1_parse_number_fail() {
+        let input = "abc";
+        let digit = satisfy(|c| c.is_digit(10));
+        let parser = digit.many1();
+        assert_eq!(dbg!(parser.parse(input)), None);
+    }
+
+    #[test]
+    fn choice_parse_alpha_numeric() {
+        let input = "a1b2我c3";
+        let alpha = satisfy(|c| c.is_ascii_alphabetic());
+        let digit = satisfy(|c| c.is_ascii_digit());
+        let parser = alpha.choice(digit).many();
+        assert_eq!(dbg!(parser.parse(input)), Some(("a1b2".to_owned(), "我c3")));
+    }
+
+    #[test]
+    fn choice_parse_common_prefix() {
+        let input = "cat";
+        let parser = string("camel").choice(string("cat"));
+        assert_eq!(dbg!(parser.parse(input)), Some(("cat", "")));
     }
 }
