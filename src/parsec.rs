@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 pub trait Parser<T>: Sized {
     fn parse<'a>(&self, input: &'a str) -> Option<(T, &'a str)>;
 
@@ -22,6 +24,14 @@ pub trait Parser<T>: Sized {
     fn choice<P>(self, another: P) -> Choice<Self, P> {
         // Haskell parsec里的<|>似乎默认是不回溯的
         Choice(self, another)
+    }
+
+    /// Parser<T1> -> Parser<T2>
+    fn map<T2, F>(self, f: F) -> Map<Self, F, T>
+    where
+        F: Fn(T) -> T2,
+    {
+        Map(self, f, PhantomData)
     }
 }
 
@@ -225,6 +235,47 @@ where
     }
 }
 
+// 本来就是简简单单的写法
+// pub struct Map<P, F>(P, F);
+
+// 非要搞成这样，就为了不出现没用过的泛型参数
+pub struct Map<P, F, T>(P, F, PhantomData<T>);
+
+// 讨论
+// https://www.reddit.com/r/rust/comments/fkulrf/quick_question_about_unused_generic_type_parameter/
+// https://stackoverflow.com/questions/28123445/is-there-any-way-to-work-around-an-unused-type-parameter
+// https://github.com/rust-lang/rust/issues/23246
+
+impl<T1, P1, T2, F> Parser<T2> for Map<P1, F, T1>
+where
+    P1: Parser<T1>,
+    F: Fn(T1) -> T2,
+{
+    fn parse<'a>(&self, input: &'a str) -> Option<(T2, &'a str)> {
+        if let Some((res, remaining)) = self.0.parse(input) {
+            Some(((self.1)(res), remaining))
+        } else {
+            None
+        }
+    }
+}
+
+// impl<T1, T2, P1, P2> From<P1> for P2
+// where
+//     P1: Parser<T1>,
+//     P2: Parser<T2>,
+//     T1: From<T2>,
+// {
+//     fn from(parser: P1) -> P2 {
+//         parser.map(|v: T1| v.into())
+//     }
+// }
+
+/// w*
+pub fn whitespace() -> impl Parser<()> {
+    satisfy(|c| c.is_whitespace()).many().map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,5 +440,12 @@ mod tests {
         let input = "cat";
         let parser = string("camel").choice(string("cat"));
         assert_eq!(dbg!(parser.parse(input)), Some(("cat", "")));
+    }
+
+    #[test]
+    fn whitespace_succeed() {
+        let input = "   abc";
+        let parser = whitespace();
+        assert_eq!(dbg!(parser.parse(input)), Some(((), "abc")));
     }
 }
