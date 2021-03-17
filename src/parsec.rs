@@ -20,7 +20,7 @@ pub trait Parser<T>: Sized {
         Many1(self)
     }
 
-    /// a <|> b
+    /// like a <|> b, but backtrack on default
     fn choice<P>(self, another: P) -> Choice<Self, P> {
         // Haskell parsec里的<|>似乎默认是不回溯的
         Choice(self, another)
@@ -32,6 +32,14 @@ pub trait Parser<T>: Sized {
         F: Fn(T) -> T2,
     {
         Map(self, f, PhantomData)
+    }
+
+    fn and_then<F, T2, P2>(self, f: F) -> AndThen<Self, F, T>
+    where
+        F: Fn(T) -> P2,
+        P2: Parser<T2>,
+    {
+        AndThen(self, f, PhantomData)
     }
 }
 
@@ -276,6 +284,23 @@ pub fn whitespace() -> impl Parser<()> {
     satisfy(|c| c.is_whitespace()).many().map(|_| ())
 }
 
+pub struct AndThen<P, F, T>(P, F, PhantomData<T>);
+
+impl<T1, P1, T2, P2, F> Parser<T2> for AndThen<P1, F, T1>
+where
+    P1: Parser<T1>,
+    P2: Parser<T2>,
+    F: Fn(T1) -> P2,
+{
+    fn parse<'a>(&self, input: &'a str) -> Option<(T2, &'a str)> {
+        if let Some((res, remaining)) = self.0.parse(input) {
+            (self.1)(res).parse(remaining)
+        } else {
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,7 +463,7 @@ mod tests {
     #[test]
     fn choice_parse_common_prefix() {
         let input = "cat";
-        let parser = string("camel").choice(string("cat"));
+        let parser = string("camel").choice(string("cat")).choice(string("dog"));
         assert_eq!(dbg!(parser.parse(input)), Some(("cat", "")));
     }
 
@@ -447,5 +472,18 @@ mod tests {
         let input = "   abc";
         let parser = whitespace();
         assert_eq!(dbg!(parser.parse(input)), Some(((), "abc")));
+    }
+
+    #[test]
+    fn and_then() {
+        let input = "0a1b0a1b0b";
+        let parser = satisfy(|c| c.is_digit(10))
+            .map(|c| match c {
+                '0' => 0,
+                _ => 1,
+            })
+            .and_then(|v| if v == 0 { char('a') } else { char('b') })
+            .many();
+        assert_eq!(dbg!(parser.parse(input)), Some(("abab".to_owned(), "0b")));
     }
 }
