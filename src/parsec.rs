@@ -1,6 +1,10 @@
 use std::marker::PhantomData;
 
-pub trait Parser<T>: Sized {
+pub trait Parser<T> {
+    // 去掉了: Sized约束。如果不去掉，会使得任何实现了Parser<T>的struct无法变成trait object。
+    // 那么联想到Iterator是怎么实现的呢？Iterator有的方法是取self（比如map、zip这一类）、有的方法取&mut self（比如next）。
+    // 方法就是不要在trait层面就约束Sized，而是到方法层面约束。在方法后面加where Self: Sized。
+    // 虽然我还是不理解为什么Sized就不能变成dyn Trait……
     fn parse<'a>(&self, input: &'a str) -> Option<(T, &'a str)>;
 
     // fn and_then<T2, P2>(self, another: P2) -> AndThen<Self, P2>
@@ -11,17 +15,26 @@ pub trait Parser<T>: Sized {
     // }
 
     /// p*
-    fn many(self) -> Many<Self> {
+    fn many(self) -> Many<Self>
+    where
+        Self: Sized, // 第一次知道还有这种写法。从std的Iterator学过来的
+    {
         Many(self)
     } // 我以为many: Parser<char> -> Parser<String>是不可能的……
 
     /// p+
-    fn many1(self) -> Many1<Self> {
+    fn many1(self) -> Many1<Self>
+    where
+        Self: Sized,
+    {
         Many1(self)
     }
 
     /// like a <|> b, but backtrack on default
-    fn choice<P>(self, another: P) -> Choice<Self, P> {
+    fn choice<P>(self, another: P) -> Choice<Self, P>
+    where
+        Self: Sized,
+    {
         // Haskell parsec里的<|>似乎默认是不回溯的
         Choice(self, another)
     }
@@ -29,17 +42,28 @@ pub trait Parser<T>: Sized {
     /// Parser<T1> -> Parser<T2>
     fn map<T2, F>(self, f: F) -> Map<Self, F, T>
     where
+        Self: Sized,
         F: Fn(T) -> T2,
     {
         Map(self, f, PhantomData)
     }
 
+    // 其实我到现在还不明白这个and_then可以用在哪里……
     fn and_then<F, T2, P2>(self, f: F) -> AndThen<Self, F, T>
     where
+        Self: Sized,
         F: Fn(T) -> P2,
         P2: Parser<T2>,
     {
         AndThen(self, f, PhantomData)
+    }
+
+    /// p{n}
+    fn count(self, n: usize) -> Count<Self>
+    where
+        Self: Sized,
+    {
+        Count(self, n)
     }
 }
 
@@ -174,9 +198,30 @@ pub struct Many<P>(P);
 
 //     }
 // }
+// 这应该是做不到的
+
+impl<T, P> Parser<Vec<T>> for Many<P>
+where
+    P: Parser<T>,
+{
+    fn parse<'a>(&self, input: &'a str) -> Option<(Vec<T>, &'a str)> {
+        let mut input = input;
+        let mut target = vec![];
+
+        loop {
+            if let Some((a, remaining)) = self.0.parse(input) {
+                input = remaining;
+                target.push(a);
+            } else {
+                break Some((target, input));
+            }
+        }
+    }
+}
 
 impl<P> Parser<String> for Many<P>
 // 不知道怎么改成Parser<&str>呜呜呜
+// 我错了，应该是做不到的
 where
     P: Parser<char>,
 {
@@ -195,12 +240,48 @@ where
     }
 }
 
-// pub fn many<'a>(parser: impl Parser<char>) -> impl Parser<String> {
-//     Many(parser)
+// 上面为一般的情况实现了many: Parser<T> -> Parser<Vec<T>>、也为char特别实现了many: Parser<char> -> Parser<String>
+// 这就带来一个问题，假设p: Parser<char>，那么p.many().parse的类型应该是Parser<Vec<char>>还是Parser<String>呢？
+// 所以有时候会出现需要type annotation的情况。
+
+// impl<P> Parser<String> for P
+// where
+//     P: Parser<Vec<char>>,
+// {
+//     fn parse<'a>(&self, input: &'a str) -> Option<(String, &'a str)> {
+//         if let Some((s, remaining)) = self.parse(input) {
+//             Some((s.into_iter().collect(), remaining))
+//         } else {
+//             None
+//         }
+//     }
 // }
-// 移动到了Parser trait里
+// 妄图通过给所有Parser<Vec<char>>实现Parser<String>来解决p.many()究竟应该是Parser<String>还是Parser<Vec<char>>的问题
 
 pub struct Many1<P>(P);
+
+impl<T, P> Parser<Vec<T>> for Many1<P>
+where
+    P: Parser<T>,
+{
+    fn parse<'a>(&self, input: &'a str) -> Option<(Vec<T>, &'a str)> {
+        let mut input = input;
+        let mut target = vec![];
+
+        loop {
+            if let Some((a, remaining)) = self.0.parse(input) {
+                input = remaining;
+                target.push(a);
+            } else {
+                break if target.is_empty() {
+                    None
+                } else {
+                    Some((target, input))
+                };
+            }
+        }
+    }
+}
 
 impl<P> Parser<String> for Many1<P>
 where
@@ -224,6 +305,7 @@ where
         }
     }
 }
+// 所有都要写两遍，代码还都差不多，好烦哦
 
 pub struct Choice<P1, P2>(P1, P2);
 
@@ -272,16 +354,17 @@ where
 // where
 //     P1: Parser<T1>,
 //     P2: Parser<T2>,
-//     T1: From<T2>,
+//     T2: From<T1>
 // {
 //     fn from(parser: P1) -> P2 {
 //         parser.map(|v: T1| v.into())
 //     }
 // }
+// 有map了，应该也不用到这个了
 
 /// w*
 pub fn whitespace() -> impl Parser<()> {
-    satisfy(|c| c.is_whitespace()).many().map(|_| ())
+    satisfy(|c| c.is_whitespace()).many().map(|_: String| ()) // ...,any()之后无法确定是Parser<String>还是Parser<Vec<T>>
 }
 
 pub struct AndThen<P, F, T>(P, F, PhantomData<T>);
@@ -298,6 +381,50 @@ where
         } else {
             None
         }
+    }
+}
+
+pub struct Count<P>(P, usize);
+
+impl<T, P> Parser<Vec<T>> for Count<P>
+where
+    P: Parser<T>,
+{
+    fn parse<'a>(&self, input: &'a str) -> Option<(Vec<T>, &'a str)> {
+        let mut input = input;
+        let mut res = vec![];
+
+        for _ in 0..self.1 {
+            if let Some((a, remaining)) = self.0.parse(input) {
+                res.push(a);
+                input = remaining;
+            } else {
+                return None;
+            }
+        }
+
+        Some((res, input))
+    }
+}
+
+impl<P> Parser<String> for Count<P>
+where
+    P: Parser<char>,
+{
+    fn parse<'a>(&self, input: &'a str) -> Option<(String, &'a str)> {
+        let mut input = input;
+        let mut res = String::new();
+
+        for _ in 0..self.1 {
+            if let Some((c, remaining)) = self.0.parse(input) {
+                res.push(c);
+                input = remaining;
+            } else {
+                return None;
+            }
+        }
+
+        Some((res, input))
     }
 }
 
@@ -424,7 +551,11 @@ mod tests {
         let input = "1234abc";
         let digit = satisfy(|c| c.is_digit(10));
         let parser = digit.many();
-        assert_eq!(dbg!(parser.parse(input)), Some(("1234".to_owned(), "abc")));
+        assert_eq!(dbg!(parser.parse(input)), Some(("1234".to_owned(), "abc"))); // 很神奇，这里明明会有歧义，parser究竟是Parser<String>还是Parser<Vec<char>>
+        assert_eq!(
+            dbg!(Parser::<Vec<char>>::parse(&parser, input)),
+            Some(("1234".chars().collect(), "abc"))
+        ); // 哈哈，两种都是
     }
 
     #[test]
@@ -448,7 +579,8 @@ mod tests {
         let input = "abc";
         let digit = satisfy(|c| c.is_digit(10));
         let parser = digit.many1();
-        assert_eq!(dbg!(parser.parse(input)), None);
+        assert_eq!(dbg!(Parser::<String>::parse(&parser, input)), None);
+        // assert_eq!(dbg!(parser.parse(input)), None);
     }
 
     #[test]
@@ -481,9 +613,23 @@ mod tests {
             .map(|c| match c {
                 '0' => 0,
                 _ => 1,
-            })
-            .and_then(|v| if v == 0 { char('a') } else { char('b') })
-            .many();
+            }) // Parser<i32>
+            .and_then(|v| if v == 0 { char('a') } else { char('b') }) // Parser<char>
+            .many(); // Parser<String>
         assert_eq!(dbg!(parser.parse(input)), Some(("abab".to_owned(), "0b")));
+    }
+
+    #[test]
+    fn count_succeed() {
+        let input = "12345";
+        let parser = satisfy(|c| c.is_digit(10)).count(5);
+        assert_eq!(dbg!(parser.parse(input)), Some(("12345".to_owned(), "")));
+    }
+
+    #[test]
+    fn count_fail() {
+        let input = "1234";
+        let parser = satisfy(|c| c.is_digit(10)).count(5);
+        assert_eq!(dbg!(Parser::<String>::parse(&parser, input)), None);
     }
 }
