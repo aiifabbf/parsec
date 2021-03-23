@@ -67,6 +67,7 @@ pub trait Parser<T> {
     }
 }
 
+#[derive(Clone)]
 struct Any;
 
 impl Parser<char> for Any {
@@ -86,6 +87,7 @@ pub fn any() -> impl Parser<char> {
     // Satisfy(|c: &char| true) // 也可以用Satisfy构造，但是语义上要占用一个closure的空间
 }
 
+#[derive(Clone)]
 struct Eof;
 
 impl Parser<()> for Eof {
@@ -102,7 +104,9 @@ pub fn eof() -> impl Parser<()> {
     Eof
 }
 
+#[derive(Clone)]
 struct Satisfy<F>(F);
+// 不用担心如果F不满足Clone怎么办，根据文档，derive(Clone)其实相当于impl<F> Clone for Satisfy<F> where F: Clone，当且仅当F也满足Clone时才会让Satisfy<F>也满足Clone，非常贴心
 
 impl<F> Parser<char> for Satisfy<F>
 where
@@ -128,6 +132,7 @@ where
     Satisfy(f)
 }
 
+#[derive(Clone)]
 struct Char(char);
 
 impl Parser<char> for Char {
@@ -169,6 +174,7 @@ pub fn none_of<'a>(array: &'a [char]) -> impl Parser<char> + 'a {
     satisfy(move |c| !array.contains(c))
 }
 
+#[derive(Clone)]
 struct Str<'a>(&'a str);
 
 impl<'b> Parser<&'b str> for Str<'b> {
@@ -191,6 +197,7 @@ pub fn string(pattern: &str) -> impl Parser<&str> {
     Str(pattern)
 }
 
+#[derive(Clone)]
 pub struct Many<P>(P);
 
 // impl<P, T> Parser<&[T]> for Many<P> where P: Parser<T> {
@@ -258,6 +265,7 @@ where
 // }
 // 妄图通过给所有Parser<Vec<char>>实现Parser<String>来解决p.many()究竟应该是Parser<String>还是Parser<Vec<char>>的问题
 
+#[derive(Clone)]
 pub struct Many1<P>(P);
 
 impl<T, P> Parser<Vec<T>> for Many1<P>
@@ -307,6 +315,7 @@ where
 }
 // 所有都要写两遍，代码还都差不多，好烦哦
 
+#[derive(Clone)]
 pub struct Choice<P1, P2>(P1, P2);
 
 impl<T, P1, P2> Parser<T> for Choice<P1, P2>
@@ -329,6 +338,7 @@ where
 // pub struct Map<P, F>(P, F);
 
 // 非要搞成这样，就为了不出现没用过的泛型参数
+#[derive(Clone)]
 pub struct Map<P, F, T>(P, F, PhantomData<T>);
 
 // 讨论
@@ -364,9 +374,10 @@ where
 
 /// w*
 pub fn whitespace() -> impl Parser<()> {
-    satisfy(|c| c.is_whitespace()).many().map(|_: String| ()) // ...,any()之后无法确定是Parser<String>还是Parser<Vec<T>>
+    satisfy(|c| c.is_whitespace()).many().map(|_: String| ()) // ...many()之后无法确定是Parser<String>还是Parser<Vec<T>>，可以用map强行让编译器推断出前面是Parser<String>
 }
 
+#[derive(Clone)]
 pub struct AndThen<P, F, T>(P, F, PhantomData<T>);
 
 impl<T1, P1, T2, P2, F> Parser<T2> for AndThen<P1, F, T1>
@@ -384,6 +395,7 @@ where
     }
 }
 
+#[derive(Clone)]
 pub struct Count<P>(P, usize);
 
 impl<T, P> Parser<Vec<T>> for Count<P>
@@ -580,7 +592,14 @@ mod tests {
         let digit = satisfy(|c| c.is_digit(10));
         let parser = digit.many1();
         assert_eq!(dbg!(Parser::<String>::parse(&parser, input)), None);
-        // assert_eq!(dbg!(parser.parse(input)), None);
+        // assert_eq!(
+        //     dbg!(parser
+        //         .clone() // 很可惜，Fn不满足Clone
+        //         .map(|v: Vec<char>| v.into_iter().collect::<String>())
+        //         .parse(input)),
+        //     None
+        // ); // 或许可以把parser包装在Arc里，就能clone了
+        assert_eq!(dbg!(parser.map(|v: String| v).parse(input)), None); // 或者也可以这样写，强行让它通过后面的map认为前面是Parser<String>
     }
 
     #[test]
@@ -615,8 +634,8 @@ mod tests {
                 _ => 1,
             }) // Parser<i32>
             .and_then(|v| if v == 0 { char('a') } else { char('b') }) // Parser<char>
-            .many(); // Parser<String>
-        assert_eq!(dbg!(parser.parse(input)), Some(("abab".to_owned(), "0b")));
+            .many(); // Parser<String>或者Parser<Vec<char>>
+        assert_eq!(dbg!(parser.parse(input)), Some(("abab".to_owned(), "0b"))); // 因为Some里面是String，所以上面推断出是Parser<String>
     }
 
     #[test]
@@ -630,6 +649,7 @@ mod tests {
     fn count_fail() {
         let input = "1234";
         let parser = satisfy(|c| c.is_digit(10)).count(5);
-        assert_eq!(dbg!(Parser::<String>::parse(&parser, input)), None);
+        assert_eq!(dbg!(Parser::<String>::parse(&parser, input)), None); // 可以这样写
+        assert_eq!(dbg!(parser.map(|v: String| v).parse(input)), None); // 也可以这样写
     }
 }
