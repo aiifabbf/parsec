@@ -870,12 +870,11 @@ mod tests {
 
     #[test]
     fn valid_parentheses() {
-        // 想要构造类似e := "(" e ")" | "()" | ""这样的递归文法，可能一开始会想到let parser = eof().choice(char('(').right(parser).left(char(')')))，可是Rust里变量无法self reference
+        // 想要构造类似e := "(" e ")" | ""这样的递归文法，可能一开始会想到let parser = eof().choice(char('(').right(parser).left(char(')')))，可是Rust里变量无法self reference
         // 那么什么东西可以self reference呢？我所知道的唯一能自指的东西是函数
         // 正好读到用Go写的parser combinator的一篇文章 https://medium.com/@armin.heller/parser-combinator-gotchas-2792deac4531
         fn parse(input: &str) -> Option<((), &str)> {
             eof()
-                .map(|_| ())
                 .choice(
                     string("()")
                         .map(|_| ())
