@@ -94,6 +94,14 @@ pub trait Parser<T> {
     {
         p1.right(self).left(p2)
     }
+
+    /// match p, consume no input even if success
+    fn look_ahead(self) -> LookAhead<Self>
+    where
+        Self: Sized,
+    {
+        LookAhead(self)
+    }
 }
 
 #[derive(Clone)]
@@ -132,6 +140,29 @@ impl Parser<()> for Eof {
 pub fn eof() -> impl Parser<()> {
     Eof
 }
+
+pub fn epsilon() -> impl Parser<()> {
+    eof().choice(any().map(|_| ()).look_ahead())
+}
+
+// #[derive(Clone)]
+// pub struct Always<T>(T);
+
+// impl<T> Parser<T> for Always<T>
+// where
+//     T: Clone,
+// {
+//     fn parse<'a>(&self, input: &'a str) -> Option<(T, &'a str)> {
+//         Some((self.0.clone(), input))
+//     }
+// }
+
+// pub fn always<T>(t: T) -> impl Parser<T>
+// where
+//     T: 'static + Clone,
+// {
+//     epsilon().map(move |_| t.clone())
+// }
 
 #[derive(Clone)]
 struct Satisfy<F>(F);
@@ -540,6 +571,34 @@ where
     }
 }
 
+#[derive(Clone)]
+pub struct Function<F>(F);
+
+impl<T, F> Parser<T> for Function<F>
+where
+    F: Fn(&str) -> Option<(T, &str)>,
+{
+    fn parse<'a>(&self, input: &'a str) -> Option<(T, &'a str)> {
+        (self.0)(input)
+    }
+}
+
+#[derive(Clone)]
+pub struct LookAhead<P>(P);
+
+impl<T, P> Parser<T> for LookAhead<P>
+where
+    P: Parser<T>,
+{
+    fn parse<'a>(&self, input: &'a str) -> Option<(T, &'a str)> {
+        if let Some((a, _)) = self.0.parse(input) {
+            Some((a, input))
+        } else {
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -761,7 +820,7 @@ mod tests {
     }
 
     #[test]
-    fn parenthesis_surrounding_digits() {
+    fn parentheses_surrounding_digits() {
         let input = "(1234)";
         let parser = char('(')
             .right(satisfy(|c| c.is_digit(10)).many())
@@ -775,9 +834,66 @@ mod tests {
 
         let input = "abba12234xyzz";
         let letters =
-            Arc::new(satisfy(|c| c.is_ascii_alphabetic()).many()) as Arc<dyn Parser<String>>;
+            Arc::new(satisfy(|c| c.is_ascii_alphabetic()).many()) as Arc<dyn Parser<String>>; // 为什么这里非要dyn，我不明白
         let digits = satisfy(|c| c.is_digit(10)).many().map(|v: String| v);
         let parser = digits.between(letters.clone(), letters);
         assert_eq!(dbg!(parser.parse(input)), Some(("12234".to_owned(), "")));
+    }
+
+    #[test]
+    fn look_ahead_succeed() {
+        let input = "1234";
+        let parser = char('1').look_ahead();
+        assert_eq!(dbg!(parser.parse(input)), Some(('1', "1234")));
+    }
+
+    #[test]
+    fn look_ahead_fail() {
+        let input = "1234";
+        let parser = char('4').look_ahead();
+        assert_eq!(dbg!(parser.parse(input)), None);
+    }
+
+    #[test]
+    fn epsilon_empty_string() {
+        let input = "";
+        let parser = epsilon();
+        assert_eq!(dbg!(parser.parse(input)), Some(((), "")));
+    }
+
+    #[test]
+    fn epsilon_non_empty_string() {
+        let input = "123";
+        let parser = epsilon();
+        assert_eq!(dbg!(parser.parse(input)), Some(((), "123")));
+    }
+
+    #[test]
+    fn valid_parentheses() {
+        // 想要构造类似e := "(" e ")" | "()" | ""这样的递归文法，可能一开始会想到let parser = eof().choice(char('(').right(parser).left(char(')')))，可是Rust里变量无法self reference
+        // 那么什么东西可以self reference呢？我所知道的唯一能自指的东西是函数
+        // 正好读到用Go写的parser combinator的一篇文章 https://medium.com/@armin.heller/parser-combinator-gotchas-2792deac4531
+        fn parse(input: &str) -> Option<((), &str)> {
+            eof()
+                .map(|_| ())
+                .choice(
+                    string("()")
+                        .map(|_| ())
+                        .choice(Function(parse).between(char('('), char(')')))
+                        .many()
+                        .map(|_| ()),
+                )
+                .parse(input)
+        }
+
+        let parser = Function(parse);
+        assert_eq!(dbg!(parser.parse("((()))")), Some(((), "")));
+        assert_eq!(dbg!(parser.parse("((()))()")), Some(((), "")));
+        assert_eq!(dbg!(parser.parse("((()))(()(()))")), Some(((), "")));
+        assert_eq!(dbg!(parser.parse("((()))(()(())()()())")), Some(((), "")));
+        assert_eq!(
+            dbg!(parser.parse("((()))(()(()))".repeat(1000).as_str())),
+            Some(((), ""))
+        );
     }
 }
