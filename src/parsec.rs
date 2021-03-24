@@ -30,7 +30,9 @@ pub trait Parser<T> {
         Many1(self)
     }
 
-    /// like a <|> b, but backtrack on default
+    /// like p1 <|> p2, but backtrack on default
+    ///
+    /// try to match p1, if success, return what p1 matches; otherwise try to match p2, if success, return what p2 matches.
     fn choice<P>(self, another: P) -> Choice<Self, P>
     where
         Self: Sized,
@@ -58,12 +60,39 @@ pub trait Parser<T> {
         AndThen(self, f, PhantomData)
     }
 
-    /// p{n}
+    /// p{n}, match p for n times
     fn count(self, n: usize) -> Count<Self>
     where
         Self: Sized,
     {
         Count(self, n)
+    }
+
+    /// p1 <* p2, match p1 then match p2, return what p1 matches
+    fn left<T2, P2>(self, another: P2) -> Left<T, Self, T2, P2>
+    where
+        Self: Sized,
+        P2: Parser<T2>,
+    {
+        Left(self, another, PhantomData)
+    }
+
+    /// p1 *> p2, match p1 then match p2, return what p2 matches
+    fn right<T2, P2>(self, another: P2) -> Right<T, Self, T2, P2>
+    where
+        Self: Sized,
+    {
+        Right(self, another, PhantomData)
+    }
+
+    /// p1 *> p <* p2, match p1 then p then p2, return what p matches
+    fn between<T1, P1, T2, P2>(self, p1: P1, p2: P2) -> Left<T, Right<T1, P1, T, Self>, T2, P2>
+    where
+        Self: Sized,
+        P1: Parser<T1>,
+        P2: Parser<T2>,
+    {
+        p1.right(self).left(p2)
     }
 }
 
@@ -440,6 +469,77 @@ where
     }
 }
 
+#[derive(Clone)]
+pub struct Left<T1, P1, T2, P2>(P1, P2, PhantomData<(T1, T2)>);
+
+impl<T1, P1, T2, P2> Parser<T1> for Left<T1, P1, T2, P2>
+where
+    P1: Parser<T1>,
+    P2: Parser<T2>,
+{
+    fn parse<'a>(&self, input: &'a str) -> Option<(T1, &'a str)> {
+        if let Some((a, remaining)) = self.0.parse(input) {
+            if let Some((_, remaining)) = self.1.parse(remaining) {
+                Some((a, remaining))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct Right<T1, P1, T2, P2>(P1, P2, PhantomData<(T1, T2)>);
+
+impl<T1, P1, T2, P2> Parser<T2> for Right<T1, P1, T2, P2>
+where
+    P1: Parser<T1>,
+    P2: Parser<T2>,
+{
+    fn parse<'a>(&self, input: &'a str) -> Option<(T2, &'a str)> {
+        if let Some((_, remaining)) = self.0.parse(input) {
+            if let Some((b, remaining)) = self.1.parse(remaining) {
+                Some((b, remaining))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+}
+
+// impl<T> Parser<T> for Box<dyn Parser<T>> {
+//     fn parse<'a>(&self, input: &'a str) -> Option<(T, &'a str)> {
+//         self.parse(input)
+//     }
+// }
+
+// impl<T> Parser<T> for std::rc::Rc<dyn Parser<T>> {
+//     fn parse<'a>(&self, input: &'a str) -> Option<(T, &'a str)> {
+//         self.parse(input)
+//     }
+// }
+
+// impl<T> Parser<T> for std::sync::Arc<dyn Parser<T>> {
+//     fn parse<'a>(&self, input: &'a str) -> Option<(T, &'a str)> {
+//         self.parse(input)
+//     }
+// }
+
+// 原来不用写三遍啊……
+impl<T, P> Parser<T> for P
+where
+    P: AsRef<dyn Parser<T>>,
+{
+    fn parse<'a>(&self, input: &'a str) -> Option<(T, &'a str)> {
+        // self.parse(input); // 不能这样写，会warning无限递归
+        Parser::<T>::parse(self.as_ref(), input)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -633,8 +733,15 @@ mod tests {
                 '0' => 0,
                 _ => 1,
             }) // Parser<i32>
-            .and_then(|v| if v == 0 { char('a') } else { char('b') }) // Parser<char>
-            .many(); // Parser<String>或者Parser<Vec<char>>
+            .and_then(|v| {
+                if v == 0 {
+                    Box::new(satisfy(|c| *c == 'a')) as Box<dyn Parser<char>>
+                } else {
+                    Box::new(satisfy(|c| *c == 'b')) as Box<dyn Parser<char>>
+                } // 这里为了体现closure是单例的，两个closure即使定义完全一样，也被认为是两种类型，if-else的两个臂不能是不同的类型，所以这里只能包装成trait object。然后又会有Box<dyn Trait> does not implement Trait的问题
+            }) // Parser<char>
+            .many() // Parser<String>或者Parser<Vec<char>>
+            .map(|v: String| v);
         assert_eq!(dbg!(parser.parse(input)), Some(("abab".to_owned(), "0b"))); // 因为Some里面是String，所以上面推断出是Parser<String>
     }
 
@@ -651,5 +758,26 @@ mod tests {
         let parser = satisfy(|c| c.is_digit(10)).count(5);
         assert_eq!(dbg!(Parser::<String>::parse(&parser, input)), None); // 可以这样写
         assert_eq!(dbg!(parser.map(|v: String| v).parse(input)), None); // 也可以这样写
+    }
+
+    #[test]
+    fn parenthesis_surrounding_digits() {
+        let input = "(1234)";
+        let parser = char('(')
+            .right(satisfy(|c| c.is_digit(10)).many())
+            .left(char(')'));
+        assert_eq!(dbg!(parser.parse(input)), Some(("1234".to_owned(), "")));
+    }
+
+    #[test]
+    fn digits_between_letters() {
+        use std::sync::Arc;
+
+        let input = "abba12234xyzz";
+        let letters =
+            Arc::new(satisfy(|c| c.is_ascii_alphabetic()).many()) as Arc<dyn Parser<String>>;
+        let digits = satisfy(|c| c.is_digit(10)).many().map(|v: String| v);
+        let parser = digits.between(letters.clone(), letters);
+        assert_eq!(dbg!(parser.parse(input)), Some(("12234".to_owned(), "")));
     }
 }
