@@ -572,7 +572,7 @@ where
 }
 
 #[derive(Clone)]
-pub struct Function<F>(F);
+pub struct Function<F>(pub F);
 
 impl<T, F> Parser<T> for Function<F>
 where
@@ -793,25 +793,25 @@ mod tests {
         assert_eq!(dbg!(parser.parse(input)), Some(((), "abc")));
     }
 
-    // #[test]
-    // fn and_then() {
-    //     let input = "0a1b0a1b0b";
-    //     let parser = satisfy(|c| c.is_digit(10))
-    //         .map(|c| match c {
-    //             '0' => 0,
-    //             _ => 1,
-    //         }) // Parser<i32>
-    //         .and_then(|v| {
-    //             if v == 0 {
-    //                 Box::new(satisfy(|c| *c == 'a')) as Box<dyn Parser<char>>
-    //             } else {
-    //                 Box::new(satisfy(|c| *c == 'b')) as Box<dyn Parser<char>>
-    //             } // 这里为了体现closure是单例的，两个closure即使定义完全一样，也被认为是两种类型，if-else的两个臂不能是不同的类型，所以这里只能包装成trait object。然后又会有Box<dyn Trait> does not implement Trait的问题
-    //         }) // Parser<char>
-    //         .many() // Parser<String>或者Parser<Vec<char>>
-    //         .map(|v: String| v);
-    //     assert_eq!(dbg!(parser.parse(input)), Some(("abab".to_owned(), "0b"))); // 因为Some里面是String，所以上面推断出是Parser<String>
-    // }
+    #[test]
+    fn and_then() {
+        let input = "0a1b0a1b0b";
+        let parser = satisfy(|c| c.is_digit(10))
+            .map(|c| match c {
+                '0' => 0,
+                _ => 1,
+            }) // Parser<i32>
+            .and_then(|v| {
+                if v == 0 {
+                    Box::new(satisfy(|c| *c == 'a')) as Box<dyn Parser<char>>
+                } else {
+                    Box::new(satisfy(|c| *c == 'b')) as Box<dyn Parser<char>>
+                } // 这里为了体现closure是单例的，两个closure即使定义完全一样，也被认为是两种类型，if-else的两个臂不能是不同的类型，所以这里只能包装成trait object。然后又会有Box<dyn Trait> does not implement Trait的问题
+            }) // Parser<char>
+            .many() // Parser<String>或者Parser<Vec<char>>
+            .map(|v: String| v);
+        assert_eq!(dbg!(parser.parse(input)), Some(("abab".to_owned(), "0b"))); // 因为Some里面是String，所以上面推断出是Parser<String>
+    }
 
     #[test]
     fn count_succeed() {
@@ -837,17 +837,17 @@ mod tests {
         assert_eq!(dbg!(parser.parse(input)), Some(("1234".to_owned(), "")));
     }
 
-    // #[test]
-    // fn digits_between_letters() {
-    //     use std::sync::Arc;
+    #[test]
+    fn digits_between_letters() {
+        use std::sync::Arc;
 
-    //     let input = "abba12234xyzz";
-    //     let letters =
-    //         Arc::new(satisfy(|c| c.is_ascii_alphabetic()).many()) as Arc<dyn Parser<String>>; // 为什么这里非要dyn，我不明白
-    //     let digits = satisfy(|c| c.is_digit(10)).many().map(|v: String| v);
-    //     let parser = digits.between(letters.clone(), letters);
-    //     assert_eq!(dbg!(parser.parse(input)), Some(("12234".to_owned(), "")));
-    // }
+        let input = "abba12234xyzz";
+        let letters =
+            Arc::new(satisfy(|c| c.is_ascii_alphabetic()).many()) as Arc<dyn Parser<String>>; // 为什么这里非要dyn，我不明白
+        let digits = satisfy(|c| c.is_digit(10)).many().map(|v: String| v);
+        let parser = digits.between(letters.clone(), letters);
+        assert_eq!(dbg!(parser.parse(input)), Some(("12234".to_owned(), "")));
+    }
 
     #[test]
     fn look_ahead_succeed() {
@@ -882,19 +882,25 @@ mod tests {
         // 想要构造类似e := "(" e ")" | ""这样的递归文法，可能一开始会想到let parser = eof().choice(char('(').right(parser).left(char(')')))，可是Rust里变量无法self reference
         // 那么什么东西可以self reference呢？我所知道的唯一能自指的东西是函数
         // 正好读到用Go写的parser combinator的一篇文章 https://medium.com/@armin.heller/parser-combinator-gotchas-2792deac4531
-        fn parser(input: &str) -> Option<((), &str)> {
+
+        // 文法是这样的
+        // s := "" | p*
+        // p := "()" | "(" s ")"
+        // 但其实也有区别，因为choice是有顺序的
+        fn s(input: &str) -> Option<((), &str)> {
             eof()
                 .choice(
                     string("()")
                         .map(|_| ())
-                        .choice(Function(parser).between(char('('), char(')')))
+                        .choice(Function(s).between(char('('), char(')')))
                         .many()
                         .map(|_| ()),
                 )
                 .parse(input)
-        }
+        } // 很想把Function(s)外面的Function去掉，直接让Fn(&str) -> Option<(T, &a)>也实现Parser<T>
 
-        let parser = Function(parser);
+        let parser = Function(s).right(eof()); // 加一个right(eof())是为了识别整个字符串。如果parse之后还剩下一段字符串，不算是valid parentheses的
+        assert_eq!(dbg!(parser.parse("")), Some(((), "")));
         assert_eq!(dbg!(parser.parse("((()))")), Some(((), "")));
         assert_eq!(dbg!(parser.parse("((()))()")), Some(((), "")));
         assert_eq!(dbg!(parser.parse("((()))(()(()))")), Some(((), "")));
@@ -903,5 +909,8 @@ mod tests {
             dbg!(parser.parse("((()))(()(()))".repeat(100000).as_str())),
             Some(((), ""))
         );
+        assert_eq!(dbg!(parser.parse(")((")), None);
+        assert_eq!(dbg!(parser.parse("((())")), None);
+        assert_eq!(dbg!(parser.parse("(()")), None);
     }
 }
