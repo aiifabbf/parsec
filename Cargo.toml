@@ -1,5 +1,5 @@
 [package]
-name = "lox"
+name = "parsec"
 version = "0.1.0"
 authors = ["Benjamin Shi <aiifabbf@outlook.com>"]
 edition = "2018"

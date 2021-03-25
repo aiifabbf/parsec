@@ -583,6 +583,15 @@ where
     }
 }
 
+// impl<T, F> Parser<T> for F
+// where
+//     F: Fn(&str) -> Option<(T, &str)>,
+// {
+//     fn parse<'a>(&self, input: &'a str) -> Option<(T, &'a str)> {
+//         (self)(input)
+//     }
+// }
+
 #[derive(Clone)]
 pub struct LookAhead<P>(P);
 
@@ -784,25 +793,25 @@ mod tests {
         assert_eq!(dbg!(parser.parse(input)), Some(((), "abc")));
     }
 
-    #[test]
-    fn and_then() {
-        let input = "0a1b0a1b0b";
-        let parser = satisfy(|c| c.is_digit(10))
-            .map(|c| match c {
-                '0' => 0,
-                _ => 1,
-            }) // Parser<i32>
-            .and_then(|v| {
-                if v == 0 {
-                    Box::new(satisfy(|c| *c == 'a')) as Box<dyn Parser<char>>
-                } else {
-                    Box::new(satisfy(|c| *c == 'b')) as Box<dyn Parser<char>>
-                } // 这里为了体现closure是单例的，两个closure即使定义完全一样，也被认为是两种类型，if-else的两个臂不能是不同的类型，所以这里只能包装成trait object。然后又会有Box<dyn Trait> does not implement Trait的问题
-            }) // Parser<char>
-            .many() // Parser<String>或者Parser<Vec<char>>
-            .map(|v: String| v);
-        assert_eq!(dbg!(parser.parse(input)), Some(("abab".to_owned(), "0b"))); // 因为Some里面是String，所以上面推断出是Parser<String>
-    }
+    // #[test]
+    // fn and_then() {
+    //     let input = "0a1b0a1b0b";
+    //     let parser = satisfy(|c| c.is_digit(10))
+    //         .map(|c| match c {
+    //             '0' => 0,
+    //             _ => 1,
+    //         }) // Parser<i32>
+    //         .and_then(|v| {
+    //             if v == 0 {
+    //                 Box::new(satisfy(|c| *c == 'a')) as Box<dyn Parser<char>>
+    //             } else {
+    //                 Box::new(satisfy(|c| *c == 'b')) as Box<dyn Parser<char>>
+    //             } // 这里为了体现closure是单例的，两个closure即使定义完全一样，也被认为是两种类型，if-else的两个臂不能是不同的类型，所以这里只能包装成trait object。然后又会有Box<dyn Trait> does not implement Trait的问题
+    //         }) // Parser<char>
+    //         .many() // Parser<String>或者Parser<Vec<char>>
+    //         .map(|v: String| v);
+    //     assert_eq!(dbg!(parser.parse(input)), Some(("abab".to_owned(), "0b"))); // 因为Some里面是String，所以上面推断出是Parser<String>
+    // }
 
     #[test]
     fn count_succeed() {
@@ -828,17 +837,17 @@ mod tests {
         assert_eq!(dbg!(parser.parse(input)), Some(("1234".to_owned(), "")));
     }
 
-    #[test]
-    fn digits_between_letters() {
-        use std::sync::Arc;
+    // #[test]
+    // fn digits_between_letters() {
+    //     use std::sync::Arc;
 
-        let input = "abba12234xyzz";
-        let letters =
-            Arc::new(satisfy(|c| c.is_ascii_alphabetic()).many()) as Arc<dyn Parser<String>>; // 为什么这里非要dyn，我不明白
-        let digits = satisfy(|c| c.is_digit(10)).many().map(|v: String| v);
-        let parser = digits.between(letters.clone(), letters);
-        assert_eq!(dbg!(parser.parse(input)), Some(("12234".to_owned(), "")));
-    }
+    //     let input = "abba12234xyzz";
+    //     let letters =
+    //         Arc::new(satisfy(|c| c.is_ascii_alphabetic()).many()) as Arc<dyn Parser<String>>; // 为什么这里非要dyn，我不明白
+    //     let digits = satisfy(|c| c.is_digit(10)).many().map(|v: String| v);
+    //     let parser = digits.between(letters.clone(), letters);
+    //     assert_eq!(dbg!(parser.parse(input)), Some(("12234".to_owned(), "")));
+    // }
 
     #[test]
     fn look_ahead_succeed() {
@@ -873,25 +882,25 @@ mod tests {
         // 想要构造类似e := "(" e ")" | ""这样的递归文法，可能一开始会想到let parser = eof().choice(char('(').right(parser).left(char(')')))，可是Rust里变量无法self reference
         // 那么什么东西可以self reference呢？我所知道的唯一能自指的东西是函数
         // 正好读到用Go写的parser combinator的一篇文章 https://medium.com/@armin.heller/parser-combinator-gotchas-2792deac4531
-        fn parse(input: &str) -> Option<((), &str)> {
+        fn parser(input: &str) -> Option<((), &str)> {
             eof()
                 .choice(
                     string("()")
                         .map(|_| ())
-                        .choice(Function(parse).between(char('('), char(')')))
+                        .choice(Function(parser).between(char('('), char(')')))
                         .many()
                         .map(|_| ()),
                 )
                 .parse(input)
         }
 
-        let parser = Function(parse);
+        let parser = Function(parser);
         assert_eq!(dbg!(parser.parse("((()))")), Some(((), "")));
         assert_eq!(dbg!(parser.parse("((()))()")), Some(((), "")));
         assert_eq!(dbg!(parser.parse("((()))(()(()))")), Some(((), "")));
         assert_eq!(dbg!(parser.parse("((()))(()(())()()())")), Some(((), "")));
         assert_eq!(
-            dbg!(parser.parse("((()))(()(()))".repeat(1000).as_str())),
+            dbg!(parser.parse("((()))(()(()))".repeat(100000).as_str())),
             Some(((), ""))
         );
     }
