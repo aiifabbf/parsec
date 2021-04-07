@@ -1,10 +1,13 @@
+use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::str::FromStr;
 
 pub trait Parser<T> {
     // 去掉了: Sized约束。如果不去掉，会使得任何实现了Parser<T>的struct无法变成trait object。
     // 那么联想到Iterator是怎么实现的呢？Iterator有的方法是取self（比如map、zip这一类）、有的方法取&mut self（比如next）。
     // 方法就是不要在trait层面就约束Sized，而是到方法层面约束。在方法后面加where Self: Sized。
     // 虽然我还是不理解为什么Sized就不能变成dyn Trait……
+
     fn parse<'a>(&self, input: &'a str) -> Option<(T, &'a str)>;
 
     // fn and_then<T2, P2>(self, another: P2) -> AndThen<Self, P2>
@@ -102,6 +105,15 @@ pub trait Parser<T> {
     {
         LookAhead(self)
     }
+
+    /// match p and then 0 or more spaces, return what p matches
+    fn lexeme(self) -> Left<T, Self, (), Whitespaces>
+    where
+        Self: Sized,
+    {
+        self.left(Whitespaces)
+    }
+    // 和Haskell parsec的不一样，没考虑注释啥的，单纯就是空格
 }
 
 #[derive(Clone)]
@@ -117,15 +129,15 @@ impl Parser<char> for Any {
     }
 }
 
-/// .
+/// any 1 character
 pub fn any() -> impl Parser<char> {
     Any // 其实这是个unit type，根本不占空间，我怀疑这里会自动优化
 
-    // Satisfy(|c: &char| true) // 也可以用Satisfy构造，但是语义上要占用一个closure的空间
+    // Satisfy(|c: &char| true) // 也可以用Satisfy构造，但是语义上要占用一个closure的空间？
 }
 
 #[derive(Clone)]
-struct Eof;
+pub struct Eof;
 
 impl Parser<()> for Eof {
     fn parse<'a>(&self, input: &'a str) -> Option<((), &'a str)> {
@@ -137,12 +149,15 @@ impl Parser<()> for Eof {
     }
 }
 
+/// only succeed when input is empty
 pub fn eof() -> impl Parser<()> {
     Eof
 }
 
+// 不知道这个定义对不对
+/// always succeed
 pub fn epsilon() -> impl Parser<()> {
-    eof().choice(any().map(|_| ()).look_ahead())
+    function(|input| Some(((), input)))
 }
 
 // #[derive(Clone)]
@@ -185,6 +200,7 @@ where
     }
 }
 
+/// 1 character c that makes f(c) true
 pub fn satisfy<F>(f: F) -> impl Parser<char>
 where
     F: Fn(&char) -> bool,
@@ -209,33 +225,81 @@ impl Parser<char> for Char {
     }
 }
 
+/// 1 particular character c
 pub fn char(c: char) -> impl Parser<char> {
     Char(c)
     // Satisfy(move |v: &char| c == *v)
 }
 
-pub fn space() -> impl Parser<char> {
-    char(' ')
+/// 1 whitespace character
+pub fn whitespace() -> impl Parser<char> {
+    satisfy(|c| c.is_whitespace())
 }
 
+#[derive(Clone)]
+pub struct Whitespaces;
+
+impl Parser<()> for Whitespaces {
+    fn parse<'a>(&self, input: &'a str) -> Option<((), &'a str)> {
+        Some(((), input.trim_start()))
+    }
+}
+
+/// 0 or more whitespace characters
+pub fn whitespaces() -> impl Parser<()> {
+    Whitespaces
+    // function(|input| Some(((), input.trim_start())))
+    // space().many().map(|_: String| ())
+}
+
+/// 1 \n
 pub fn newline() -> impl Parser<char> {
     char('\n')
 }
 
+/// 1 \t
 pub fn tab() -> impl Parser<char> {
     char('\t')
 }
 
+/// 1 uppercase character
+pub fn upper() -> impl Parser<char> {
+    satisfy(|c| c.is_uppercase())
+}
+
+/// 1 lowercase character
+pub fn lower() -> impl Parser<char> {
+    satisfy(|c| c.is_lowercase())
+}
+
+/// 1 alphanumeric character
+pub fn alphanumeric() -> impl Parser<char> {
+    satisfy(|c| c.is_alphanumeric())
+}
+
+/// '0'..='9'
+pub fn digit() -> impl Parser<char> {
+    satisfy(|c| c.is_digit(10))
+}
+
+/// '0'..='9', 'a'..='f' and 'A'..='F'
+pub fn hex_digit() -> impl Parser<char> {
+    satisfy(|c| c.is_digit(16))
+}
+
+/// 1 character that is an element of the char slice
 pub fn one_of<'a>(array: &'a [char]) -> impl Parser<char> + 'a {
     satisfy(move |c| array.contains(c)) // 一定要move，array需要移动到closure里面
 }
 
+/// 1 character that is not an element of the char slice
 pub fn none_of<'a>(array: &'a [char]) -> impl Parser<char> + 'a {
     satisfy(move |c| !array.contains(c))
 }
 
 #[derive(Clone)]
 struct Str<'a>(&'a str);
+// 为什么这里不用pub呢？
 
 impl<'b> Parser<&'b str> for Str<'b> {
     fn parse<'a>(&self, input: &'a str) -> Option<(&'b str, &'a str)> {
@@ -253,6 +317,7 @@ impl<'b> Parser<&'b str> for Str<'b> {
     }
 }
 
+/// match a particular string
 pub fn string(pattern: &str) -> impl Parser<&str> {
     Str(pattern)
 }
@@ -432,11 +497,6 @@ where
 // }
 // 有map了，应该也不用到这个了
 
-/// w*
-pub fn whitespace() -> impl Parser<()> {
-    satisfy(|c| c.is_whitespace()).many().map(|_: String| ()) // ...many()之后无法确定是Parser<String>还是Parser<Vec<T>>，可以用map强行让编译器推断出前面是Parser<String>
-}
-
 #[derive(Clone)]
 pub struct AndThen<P, F, T>(P, F, PhantomData<T>);
 
@@ -572,15 +632,25 @@ where
 }
 
 #[derive(Clone)]
-pub struct Function<F>(pub F);
+pub struct Function<F>(F);
 
 impl<T, F> Parser<T> for Function<F>
 where
+    // F: for<'r> Fn(&'r str) -> Option<(T, &'r str)>, // 这个for<'r>是什么意思？
     F: Fn(&str) -> Option<(T, &str)>,
 {
     fn parse<'a>(&self, input: &'a str) -> Option<(T, &'a str)> {
         (self.0)(input)
     }
+}
+
+// 因为Function没有限定f的类型，而Rust里无法给closure指定lifetime，有可能遇到Function(...)没有实现Parser的问题，所以这里用一个函数限定一下，其实我是很想直接impl<T, F> Parser for F where F: Fn(&str) -> Option<(T, &str)>的
+// https://stackoverflow.com/questions/31362206/expected-bound-lifetime-parameter-found-concrete-lifetime-e0271/31365625#31365625 这里还提到了用带输入类型限定的dummy函数来间接给closure标记lifetime的方法
+pub fn function<T, F>(f: F) -> Function<F>
+where
+    F: Fn(&str) -> Option<(T, &str)>,
+{
+    Function(f)
 }
 
 // impl<T, F> Parser<T> for F
@@ -591,6 +661,7 @@ where
 //         (self)(input)
 //     }
 // }
+// 做不到，提示和AsRef那个impl冲突了
 
 #[derive(Clone)]
 pub struct LookAhead<P>(P);
@@ -607,6 +678,54 @@ where
         }
     }
 }
+
+pub fn symbol(s: &str) -> impl Parser<&str> {
+    Str(s).left(whitespaces())
+}
+// 觉得这个好像没什么用orz
+
+// 不限定parse出来是u64或者其他类型，方便和无限位精度库梦幻联动
+pub fn decimal<T, E>() -> impl Parser<T>
+where
+    T: FromStr<Err = E>,
+    E: Debug, // 这好烦
+{
+    digit().many1().map(|v: String| v.parse().unwrap()) // ...many1()之后无法确定是Parser<String>还是Parser<Vec<T>>，可以用map强行让编译器推断出前面是Parser<String>
+}
+// 比如rug的无限精度Integer也实现了FromStr，所以可以直接parse出这个
+
+fn sign() -> impl Parser<char> {
+    char('+').choice(char('-'))
+}
+
+pub fn integer<T, E>() -> impl Parser<T>
+where
+    T: FromStr<Err = E>,
+    E: Debug,
+{
+    fn f<T, E>(input: &str) -> Option<(T, &str)>
+    where
+        T: FromStr<Err = E>,
+        E: Debug,
+    {
+        let (sign, input) = sign()
+            .left(whitespaces())
+            .parse(input)
+            .unwrap_or(('+', input));
+        let (digits, input) = satisfy(|c| c.is_digit(10))
+            .many1()
+            .map(|v: String| v)
+            .parse(input)?;
+        if let Ok(v) = format!("{}{}", sign, digits).parse::<T>() {
+            Some((v, input))
+        } else {
+            None
+        }
+    }
+
+    function(f)
+}
+// Haskell parsec的integer是lexeme的，而且可以parse十六进制
 
 #[cfg(test)]
 mod tests {
@@ -789,7 +908,7 @@ mod tests {
     #[test]
     fn whitespace_succeed() {
         let input = "   abc";
-        let parser = whitespace();
+        let parser = whitespaces();
         assert_eq!(dbg!(parser.parse(input)), Some(((), "abc")));
     }
 
@@ -878,6 +997,18 @@ mod tests {
     }
 
     #[test]
+    fn closure_parser() {
+        let parser = function(|input: &str| -> Option<(char, &str)> {
+            if let Some(c) = input.chars().next() {
+                Some((c, input))
+            } else {
+                None
+            }
+        }); // let parser = char('a').look_ahead();
+        assert_eq!(dbg!(parser.parse("abc")), Some(('a', "abc")));
+    }
+
+    #[test]
     fn valid_parentheses() {
         // 想要构造类似e := "(" e ")" | ""这样的递归文法，可能一开始会想到let parser = eof().choice(char('(').right(parser).left(char(')')))，可是Rust里变量无法self reference
         // 那么什么东西可以self reference呢？我所知道的唯一能自指的东西是函数
@@ -892,25 +1023,48 @@ mod tests {
                 .choice(
                     string("()")
                         .map(|_| ())
-                        .choice(Function(s).between(char('('), char(')')))
+                        .choice(function(s).between(char('('), char(')')))
                         .many()
                         .map(|_| ()),
                 )
                 .parse(input)
         } // 很想把Function(s)外面的Function去掉，直接让Fn(&str) -> Option<(T, &a)>也实现Parser<T>
 
-        let parser = Function(s).right(eof()); // 加一个right(eof())是为了识别整个字符串。如果parse之后还剩下一段字符串，不算是valid parentheses的
+        let parser = function(s).right(eof()); // 加一个right(eof())是为了识别整个字符串。如果parse之后还剩下一段字符串，不算是valid parentheses的
         assert_eq!(dbg!(parser.parse("")), Some(((), "")));
         assert_eq!(dbg!(parser.parse("((()))")), Some(((), "")));
         assert_eq!(dbg!(parser.parse("((()))()")), Some(((), "")));
         assert_eq!(dbg!(parser.parse("((()))(()(()))")), Some(((), "")));
         assert_eq!(dbg!(parser.parse("((()))(()(())()()())")), Some(((), "")));
         assert_eq!(
-            dbg!(parser.parse("((()))(()(()))".repeat(100000).as_str())),
+            dbg!(parser.parse("((()))(()(()))".repeat(1000).as_str())),
             Some(((), ""))
         );
         assert_eq!(dbg!(parser.parse(")((")), None);
         assert_eq!(dbg!(parser.parse("((())")), None);
         assert_eq!(dbg!(parser.parse("(()")), None);
+    }
+
+    #[test]
+    fn parse_decimal() {
+        let parser = decimal();
+        assert_eq!(dbg!(parser.parse("1234")), Some((1234, "")));
+        assert_eq!(dbg!(parser.parse("0")), Some((0, "")));
+        assert_eq!(dbg!(parser.parse("1234abc")), Some((1234, "abc")));
+        assert_eq!(dbg!(parser.parse("1 23")), Some((1, " 23")));
+    }
+
+    #[test]
+    fn parse_integer() {
+        let parser = integer().lexeme();
+        assert_eq!(dbg!(parser.parse("+1234")), Some((1234, "")));
+        assert_eq!(dbg!(parser.parse("+  1234")), Some((1234, "")));
+        assert_eq!(dbg!(parser.parse("1234  ")), Some((1234, "")));
+        assert_eq!(dbg!(parser.parse("-1234")), Some((-1234, "")));
+        assert_eq!(dbg!(parser.parse("-  1234")), Some((-1234, "")));
+        assert_eq!(dbg!(parser.parse("12 34")), Some((12, "34")));
+        assert_eq!(dbg!(parser.parse("+ 12 34")), Some((12, "34")));
+        assert_eq!(dbg!(parser.parse("- 12 34")), Some((-12, "34")));
+        assert_eq!(dbg!(parser.parse("a12 34")), None);
     }
 }
