@@ -114,6 +114,49 @@ pub trait Parser<T> {
         self.left(Whitespaces)
     }
     // 和Haskell parsec的不一样，没考虑注释啥的，单纯就是空格
+
+    /// match 0 or more p, separated by separator
+    fn separated_by<T2, P2>(self, separator: P2) -> SeparatedBy<T, Self, T2, P2>
+    where
+        Self: Sized,
+        P2: Parser<T2>,
+    {
+        SeparatedBy(self, separator, PhantomData)
+    }
+
+    /// try to match p, if success, consumes input and return (); otherwise returns () and does not consume input
+    fn optional(self) -> Optional<T, Self>
+    where
+        Self: Sized,
+    {
+        Optional(self, PhantomData)
+    }
+
+    /// match 0 or more p, separated by separator and optionally ended by separator
+    fn separated_end_by<T2, P2>(self, separator: P2) -> SeparatedEndBy<T, Self, T2, P2>
+    where
+        Self: Sized,
+        P2: Parser<T2>,
+    {
+        SeparatedEndBy(self, separator, PhantomData)
+    }
+
+    // 这两个不知道有什么用……直接写也足够简单了
+    fn end_by<T2, P2>(self, separator: P2) -> Many<Left<T, Self, T2, P2>>
+    where
+        Self: Sized,
+        P2: Parser<T2>,
+    {
+        self.left(separator).many()
+    }
+
+    fn end_by1<T2, P2>(self, separator: P2) -> Many1<Left<T, Self, T2, P2>>
+    where
+        Self: Sized,
+        P2: Parser<T2>,
+    {
+        self.left(separator).many1()
+    }
 }
 
 #[derive(Clone)]
@@ -155,7 +198,7 @@ pub fn eof() -> impl Parser<()> {
 }
 
 // 不知道这个定义对不对
-/// always succeed
+/// always succeed, consume nothing
 pub fn epsilon() -> impl Parser<()> {
     function(|input| Some(((), input)))
 }
@@ -727,6 +770,97 @@ where
 }
 // Haskell parsec的integer是lexeme的，而且可以parse十六进制
 
+#[derive(Clone)]
+pub struct SeparatedBy<T1, P1, T2, P2>(P1, P2, PhantomData<(T1, T2)>);
+
+// 写的太难看了……
+impl<T1, P1, T2, P2> Parser<Vec<T1>> for SeparatedBy<T1, P1, T2, P2>
+where
+    P1: Parser<T1>,
+    P2: Parser<T2>,
+{
+    fn parse<'a>(&self, input: &'a str) -> Option<(Vec<T1>, &'a str)> {
+        let mut input = input;
+        let mut res = vec![];
+
+        // 先尝试parse第一个元素
+        if let Some((v, remaining)) = self.0.parse(input) {
+            res.push(v);
+            input = remaining;
+        } else {
+            return Some((res, input));
+        }
+
+        loop {
+            // 然后parse分隔符、元素、分隔符、元素……
+            if let Some((_, tail1)) = self.1.parse(input) {
+                // tail1是吃掉分隔符之后的输入
+                if let Some((v, tail2)) = self.0.parse(tail1) {
+                    // tail2是吃掉元素之后的输入
+                    // 一定要分隔符、元素都成功了，这块才算结束
+                    res.push(v);
+                    input = tail2
+                } else {
+                    break Some((res, input)); // 一旦不成功就把input回退到parse分隔符之前的样子
+                }
+            } else {
+                break Some((res, input));
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct Optional<T, P>(P, PhantomData<T>);
+
+impl<T, P> Parser<()> for Optional<T, P>
+where
+    P: Parser<T>,
+{
+    fn parse<'a>(&self, input: &'a str) -> Option<((), &'a str)> {
+        if let Some((_, remaining)) = self.0.parse(input) {
+            Some(((), remaining))
+        } else {
+            Some(((), input))
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct SeparatedEndBy<T1, P1, T2, P2>(P1, P2, PhantomData<(T1, T2)>);
+
+impl<T1, P1, T2, P2> Parser<Vec<T1>> for SeparatedEndBy<T1, P1, T2, P2>
+where
+    P1: Parser<T1>,
+    P2: Parser<T2>,
+{
+    fn parse<'a>(&self, input: &'a str) -> Option<(Vec<T1>, &'a str)> {
+        // 为什么不能在内部临时建parser然后直接用呢？
+        let mut input = input;
+        let mut res = vec![];
+
+        if let Some((v, remaining)) = self.0.parse(input) {
+            res.push(v);
+            input = remaining;
+        } else {
+            return Some((res, input));
+        }
+
+        loop {
+            if let Some((_, tail1)) = self.1.parse(input) {
+                if let Some((v, tail2)) = self.0.parse(tail1) {
+                    res.push(v);
+                    input = tail2
+                } else {
+                    break Some((res, tail1)); // 和SeparatedBy只有一个单词的区别。分隔符parse成功但元素不成功，不需要把input回退到parse分隔符之前的样子
+                }
+            } else {
+                break Some((res, input));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1066,5 +1200,40 @@ mod tests {
         assert_eq!(dbg!(parser.parse("+ 12 34")), Some((12, "34")));
         assert_eq!(dbg!(parser.parse("- 12 34")), Some((-12, "34")));
         assert_eq!(dbg!(parser.parse("a12 34")), None);
+    }
+
+    #[test]
+    fn comma_separated_integers() {
+        let parser = integer().lexeme().separated_by(char(',').lexeme());
+        assert_eq!(dbg!(parser.parse("1,2,3")), Some((vec![1, 2, 3], "")));
+        assert_eq!(dbg!(parser.parse("1,2,3,")), Some((vec![1, 2, 3], ",")));
+        assert_eq!(dbg!(parser.parse("+1, -2, 3")), Some((vec![1, -2, 3], "")));
+        assert_eq!(
+            dbg!(parser.parse("+ 1 , - 2 , 3 ")),
+            Some((vec![1, -2, 3], ""))
+        );
+    }
+
+    #[test]
+    fn rust_vector_macro() {
+        // let list = integer()
+        //     .lexeme()
+        //     .separated_by(char(',').lexeme())
+        //     .left(char(',').optional());
+        let list = integer().lexeme().separated_end_by(char(',').lexeme());
+        let parser = list.between(string("vec![").lexeme(), string("]"));
+        assert_eq!(dbg!(parser.parse("vec![1,2,3]")), Some((vec![1, 2, 3], "")));
+        assert_eq!(
+            dbg!(parser.parse("vec![ +1, -2, 3,]")),
+            Some((vec![1, -2, 3], ""))
+        );
+        assert_eq!(
+            dbg!(parser.parse("vec![ 1 , 2 , 3 ]")),
+            Some((vec![1, 2, 3], ""))
+        );
+        assert_eq!(
+            dbg!(parser.parse("vec![ 1 , 2 , 3 , ]")),
+            Some((vec![1, 2, 3], ""))
+        );
     }
 }
