@@ -157,10 +157,26 @@ pub trait Parser<T> {
     {
         self.left(separator).many1()
     }
+
+    fn chain_left1<T2, P2>(self, operator: P2) -> ChainLeft1<T, Self, T2, P2>
+    where
+        Self: Sized,
+        P2: Parser<T2>,
+    {
+        ChainLeft1(self, operator, PhantomData)
+    }
+
+    fn chain_right1<T2, P2>(self, operator: P2) -> ChainRight1<T, Self, T2, P2>
+    where
+        Self: Sized,
+        P2: Parser<T2>,
+    {
+        ChainRight1(self, operator, PhantomData)
+    }
 }
 
 #[derive(Clone)]
-struct Any;
+pub struct Any;
 
 impl Parser<char> for Any {
     fn parse<'a>(&self, input: &'a str) -> Option<(char, &'a str)> {
@@ -173,11 +189,14 @@ impl Parser<char> for Any {
 }
 
 /// any 1 character
-pub fn any() -> impl Parser<char> {
+pub fn any() -> Any {
     Any // 其实这是个unit type，根本不占空间，我怀疑这里会自动优化
 
     // Satisfy(|c: &char| true) // 也可以用Satisfy构造，但是语义上要占用一个closure的空间？
 }
+// 天哪，我才发现函数签名里面返回值类型写impl Trait和写具体的P类型竟然是不同的！写impl Trait的话，会导致f()只能用Trait里的方法，无法发现P的方法。
+// https://stackoverflow.com/questions/64693182/rust-expected-type-found-opaque-type
+// 可是如果返回值类型真的复杂到没法写出来呢？或者有些情况根本就写不出类型（比如closure）？别急，你可以写impl Trait + Clone。下面一大堆用satisfy实现的函数就是这样做的。
 
 #[derive(Clone)]
 pub struct Eof;
@@ -193,14 +212,23 @@ impl Parser<()> for Eof {
 }
 
 /// only succeed when input is empty
-pub fn eof() -> impl Parser<()> {
+pub fn eof() -> Eof {
     Eof
+}
+
+#[derive(Clone)]
+pub struct Epsilon;
+
+impl Parser<()> for Epsilon {
+    fn parse<'a>(&self, input: &'a str) -> Option<((), &'a str)> {
+        Some(((), input))
+    }
 }
 
 // 不知道这个定义对不对
 /// always succeed, consume nothing
-pub fn epsilon() -> impl Parser<()> {
-    function(|input| Some(((), input)))
+pub fn epsilon() -> Epsilon {
+    Epsilon
 }
 
 // #[derive(Clone)]
@@ -223,16 +251,16 @@ pub fn epsilon() -> impl Parser<()> {
 // }
 
 #[derive(Clone)]
-struct Satisfy<F>(F);
+pub struct Satisfy<F>(F);
 // 不用担心如果F不满足Clone怎么办，根据文档，derive(Clone)其实相当于impl<F> Clone for Satisfy<F> where F: Clone，当且仅当F也满足Clone时才会让Satisfy<F>也满足Clone，非常贴心
 
 impl<F> Parser<char> for Satisfy<F>
 where
-    F: Fn(&char) -> bool, // Fn(char) -> bool
+    F: Fn(char) -> bool, // Fn(char) -> bool
 {
     fn parse<'a>(&self, input: &'a str) -> Option<(char, &'a str)> {
         if let Some(first) = input.chars().next() {
-            if (self.0)(&first) {
+            if (self.0)(first) {
                 Some((first.clone(), &input[first.len_utf8()..]))
             } else {
                 None
@@ -244,15 +272,15 @@ where
 }
 
 /// 1 character c that makes f(c) true
-pub fn satisfy<F>(f: F) -> impl Parser<char>
+pub fn satisfy<F>(f: F) -> Satisfy<F>
 where
-    F: Fn(&char) -> bool,
+    F: Fn(char) -> bool,
 {
     Satisfy(f)
 }
 
 #[derive(Clone)]
-struct Char(char);
+pub struct Char(char);
 
 impl Parser<char> for Char {
     fn parse<'a>(&self, input: &'a str) -> Option<(char, &'a str)> {
@@ -269,13 +297,14 @@ impl Parser<char> for Char {
 }
 
 /// 1 particular character c
-pub fn char(c: char) -> impl Parser<char> {
+pub fn char(c: char) -> Char {
     Char(c)
     // Satisfy(move |v: &char| c == *v)
 }
 
 /// 1 whitespace character
-pub fn whitespace() -> impl Parser<char> {
+pub fn whitespace() -> impl Parser<char> + Clone {
+    // 比如这里就没法写出返回值的类型，所以只能写impl Trait + Clone
     satisfy(|c| c.is_whitespace())
 }
 
@@ -289,59 +318,59 @@ impl Parser<()> for Whitespaces {
 }
 
 /// 0 or more whitespace characters
-pub fn whitespaces() -> impl Parser<()> {
+pub fn whitespaces() -> Whitespaces {
     Whitespaces
     // function(|input| Some(((), input.trim_start())))
     // space().many().map(|_: String| ())
 }
 
 /// 1 \n
-pub fn newline() -> impl Parser<char> {
+pub fn newline() -> Char {
     char('\n')
 }
 
 /// 1 \t
-pub fn tab() -> impl Parser<char> {
+pub fn tab() -> Char {
     char('\t')
 }
 
 /// 1 uppercase character
-pub fn upper() -> impl Parser<char> {
+pub fn upper() -> impl Parser<char> + Clone {
     satisfy(|c| c.is_uppercase())
 }
 
 /// 1 lowercase character
-pub fn lower() -> impl Parser<char> {
+pub fn lower() -> impl Parser<char> + Clone {
     satisfy(|c| c.is_lowercase())
 }
 
 /// 1 alphanumeric character
-pub fn alphanumeric() -> impl Parser<char> {
+pub fn alphanumeric() -> impl Parser<char> + Clone {
     satisfy(|c| c.is_alphanumeric())
 }
 
 /// '0'..='9'
-pub fn digit() -> impl Parser<char> {
+pub fn digit() -> impl Parser<char> + Clone {
     satisfy(|c| c.is_digit(10))
 }
 
 /// '0'..='9', 'a'..='f' and 'A'..='F'
-pub fn hex_digit() -> impl Parser<char> {
+pub fn hex_digit() -> impl Parser<char> + Clone {
     satisfy(|c| c.is_digit(16))
 }
 
 /// 1 character that is an element of the char slice
-pub fn one_of<'a>(array: &'a [char]) -> impl Parser<char> + 'a {
-    satisfy(move |c| array.contains(c)) // 一定要move，array需要移动到closure里面
+pub fn one_of<'a>(array: &'a [char]) -> impl Parser<char> + Clone + 'a {
+    satisfy(move |c| array.contains(&c)) // 一定要move，array需要移动到closure里面
 }
 
 /// 1 character that is not an element of the char slice
-pub fn none_of<'a>(array: &'a [char]) -> impl Parser<char> + 'a {
-    satisfy(move |c| !array.contains(c))
+pub fn none_of<'a>(array: &'a [char]) -> impl Parser<char> + Clone + 'a {
+    satisfy(move |c| !array.contains(&c))
 }
 
 #[derive(Clone)]
-struct Str<'a>(&'a str);
+pub struct Str<'a>(&'a str);
 // 为什么这里不用pub呢？
 
 impl<'b> Parser<&'b str> for Str<'b> {
@@ -361,7 +390,7 @@ impl<'b> Parser<&'b str> for Str<'b> {
 }
 
 /// match a particular string
-pub fn string(pattern: &str) -> impl Parser<&str> {
+pub fn string<'a>(pattern: &'a str) -> Str<'a> {
     Str(pattern)
 }
 
@@ -485,6 +514,10 @@ where
 
 #[derive(Clone)]
 pub struct Choice<P1, P2>(P1, P2);
+
+impl<P1, P2> Choice<P1, P2> {
+    fn f(&self) {}
+}
 
 impl<T, P1, P2> Parser<T> for Choice<P1, P2>
 where
@@ -722,7 +755,7 @@ where
     }
 }
 
-pub fn symbol(s: &str) -> impl Parser<&str> {
+pub fn symbol(s: &str) -> impl Parser<&str> + Clone {
     Str(s).left(whitespaces())
 }
 // 觉得这个好像没什么用orz
@@ -737,11 +770,12 @@ where
 }
 // 比如rug的无限精度Integer也实现了FromStr，所以可以直接parse出这个
 
-fn sign() -> impl Parser<char> {
+fn sign() -> Choice<Char, Char> {
     char('+').choice(char('-'))
 }
 
-pub fn integer<T, E>() -> impl Parser<T>
+// pub fn integer<T, E>() -> impl Parser<T>
+pub fn integer<T, E>() -> Function<fn(&str) -> Option<(T, &str)>>
 where
     T: FromStr<Err = E>,
     E: Debug,
@@ -751,6 +785,7 @@ where
         T: FromStr<Err = E>,
         E: Debug,
     {
+        sign().f();
         let (sign, input) = sign()
             .left(whitespaces())
             .parse(input)
@@ -861,6 +896,64 @@ where
     }
 }
 
+#[derive(Clone)]
+pub struct ChainLeft1<T1, P1, T2, P2>(P1, P2, PhantomData<(T1, T2)>);
+
+impl<T1, P1, T2, P2> Parser<T1> for ChainLeft1<T1, P1, T2, P2>
+where
+    P1: Parser<T1>,
+    P2: Parser<T2>,
+    T2: Fn(T1, T1) -> T1,
+{
+    fn parse<'a>(&self, input: &'a str) -> Option<(T1, &'a str)> {
+        if let Some((acc, remaining)) = self.0.parse(input) {
+            let mut acc = acc;
+            let mut input = remaining;
+
+            loop {
+                if let Some((f, tail1)) = self.1.parse(input) {
+                    if let Some((w, tail2)) = self.0.parse(tail1) {
+                        input = tail2;
+                        acc = f(acc, w);
+                    } else {
+                        break Some((acc, input));
+                    }
+                } else {
+                    break Some((acc, input));
+                }
+            }
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct ChainRight1<T1, P1, T2, P2>(P1, P2, PhantomData<(T1, T2)>);
+
+impl<T1, P1, T2, P2> Parser<T1> for ChainRight1<T1, P1, T2, P2>
+where
+    P1: Parser<T1>,
+    P2: Parser<T2>,
+    T2: Fn(T1, T1) -> T1,
+{
+    fn parse<'a>(&self, input: &'a str) -> Option<(T1, &'a str)> {
+        if let Some((v, tail1)) = self.0.parse(input) {
+            if let Some((f, tail2)) = self.1.parse(tail1) {
+                if let Some((w, tail3)) = self.parse(tail2) {
+                    Some((f(v, w), tail3))
+                } else {
+                    Some((v, tail1))
+                }
+            } else {
+                Some((v, tail1))
+            }
+        } else {
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -896,7 +989,7 @@ mod tests {
     #[test]
     fn satisfy_parse_fail() {
         let input = "abc";
-        let parser = Satisfy(|c: &char| c.is_ascii_uppercase()); // 这里需要给参数写type hint，有点恶心
+        let parser = satisfy(|c| c.is_ascii_uppercase());
         assert_eq!(dbg!(parser.parse(input)), None);
     }
 
@@ -910,14 +1003,14 @@ mod tests {
     #[test]
     fn satisfy_parse_digit() {
         let input = "1bc";
-        let parser = Satisfy(|c: &char| c.is_digit(10));
+        let parser = satisfy(|c| c.is_digit(10));
         assert_eq!(dbg!(parser.parse(input)), Some(('1', "bc")));
     }
 
     #[test]
     fn satisfy_parse_non_digit() {
         let input = "abc";
-        let parser = Satisfy(|c: &char| c.is_digit(10));
+        let parser = satisfy(|c| c.is_digit(10));
         assert_eq!(dbg!(parser.parse(input)), None);
     }
 
@@ -1056,9 +1149,9 @@ mod tests {
             }) // Parser<i32>
             .and_then(|v| {
                 if v == 0 {
-                    Box::new(satisfy(|c| *c == 'a')) as Box<dyn Parser<char>>
+                    Box::new(satisfy(|c| c == 'a')) as Box<dyn Parser<char>>
                 } else {
-                    Box::new(satisfy(|c| *c == 'b')) as Box<dyn Parser<char>>
+                    Box::new(satisfy(|c| c == 'b')) as Box<dyn Parser<char>>
                 } // 这里为了体现closure是单例的，两个closure即使定义完全一样，也被认为是两种类型，if-else的两个臂不能是不同的类型，所以这里只能包装成trait object。然后又会有Box<dyn Trait> does not implement Trait的问题
             }) // Parser<char>
             .many() // Parser<String>或者Parser<Vec<char>>
@@ -1234,6 +1327,71 @@ mod tests {
         assert_eq!(
             dbg!(parser.parse("vec![ 1 , 2 , 3 , ]")),
             Some((vec![1, 2, 3], ""))
+        );
+    }
+
+    #[test]
+    fn evaluate() {
+        let number = integer().lexeme().map(|v: i64| v);
+
+        fn add(v: i64, w: i64) -> i64 {
+            v + w
+        }
+
+        fn subtract(v: i64, w: i64) -> i64 {
+            v - w
+        }
+
+        let operator = char('+')
+            .lexeme()
+            .map(|_| add as fn(i64, i64) -> i64) // 这里必须要写as，因为add其实不是函数指针fn，而是一个叫做fn item的东西。和closure一样，fn item也是单例的，每个fn item即使签名相同、也是完全不同的类型，所以一样要cast到函数指针
+            .choice(char('-').lexeme().map(|_| subtract as fn(i64, i64) -> i64));
+        // https://stackoverflow.com/questions/27895946/expected-fn-item-found-a-different-fn-item-when-working-with-function-pointer
+        let parser = number.clone().chain_left1(operator.clone());
+        assert_eq!(dbg!(parser.parse("+1")), Some((1, "")));
+        assert_eq!(dbg!(parser.parse("+1+2-3")), Some((0, "")));
+        assert_eq!(dbg!(parser.parse("+ 1 + 2 - 3")), Some((0, "")));
+        assert_eq!(dbg!(parser.parse("- 1 + - 2 - + 3")), Some((-6, "")));
+        assert_eq!(dbg!(parser.parse("+ 1 +-+3")), Some((1, "+-+3")));
+
+        // 让加减号变成右结合
+        let parser = number.clone().chain_right1(operator.clone());
+        assert_eq!(dbg!(parser.parse("-1-2-3")), Some((0, ""))); // (-1) - ((-2) - 3)
+    }
+
+    #[test]
+    fn ast() {
+        #[derive(Debug, PartialEq, Eq)]
+        enum Expression {
+            Number(i64),
+            Add(Box<Expression>, Box<Expression>),
+            Subtract(Box<Expression>, Box<Expression>),
+        }
+
+        let number = integer().lexeme().map(Expression::Number);
+
+        fn add(v: Expression, w: Expression) -> Expression {
+            Expression::Add(v.into(), w.into())
+        } // 这样真的好难看……如果能直接在map里传入variant constructor就好了，就很优雅，而且Rust里的enum variant确实是个函数。但是这样没法处理Box。
+
+        fn subtract(v: Expression, w: Expression) -> Expression {
+            Expression::Subtract(v.into(), w.into())
+        }
+
+        let operator = char('+')
+            .map(|_| add as fn(Expression, Expression) -> Expression)
+            .choice(char('-').map(|_| subtract as fn(Expression, Expression) -> Expression));
+        let parser = number.chain_left1(operator);
+        assert_eq!(
+            dbg!(parser.parse("+1+2-3")),
+            Some((
+                Expression::Subtract(
+                    Expression::Add(Expression::Number(1).into(), Expression::Number(2).into(),)
+                        .into(),
+                    Expression::Number(3).into(),
+                ),
+                ""
+            ))
         );
     }
 }
