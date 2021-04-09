@@ -26,14 +26,14 @@ Build a parser that matches valid parentheses like ``(()())((()))``
             .choice(
                 string("()")
                     .map(|_| ())
-                    .choice(Function(s).between(char('('), char(')'))) // Yes, recursive grammar is possible.
+                    .choice(function(s).between(char('('), char(')'))) // Yes, recursive grammar is possible.
                     .many()
                     .map(|_| ()),
             )
             .parse(input)
     }
 
-    let parser = Function(s);
+    let parser = function(s);
     assert_eq!(
         dbg!(parser.parse("((()))(()(()))".repeat(100000).as_str())),
         Some(((), ""))
