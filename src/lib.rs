@@ -515,10 +515,6 @@ where
 #[derive(Clone)]
 pub struct Choice<P1, P2>(P1, P2);
 
-impl<P1, P2> Choice<P1, P2> {
-    fn f(&self) {}
-}
-
 impl<T, P1, P2> Parser<T> for Choice<P1, P2>
 where
     P1: Parser<T>,
@@ -785,7 +781,6 @@ where
         T: FromStr<Err = E>,
         E: Debug,
     {
-        sign().f();
         let (sign, input) = sign()
             .left(whitespaces())
             .parse(input)
@@ -1368,8 +1363,6 @@ mod tests {
             Subtract(Box<Expression>, Box<Expression>),
         }
 
-        let number = integer().lexeme().map(Expression::Number);
-
         fn add(v: Expression, w: Expression) -> Expression {
             Expression::Add(v.into(), w.into())
         } // 这样真的好难看……如果能直接在map里传入variant constructor就好了，就很优雅，而且Rust里的enum variant确实是个函数。但是这样没法处理Box。
@@ -1378,17 +1371,49 @@ mod tests {
             Expression::Subtract(v.into(), w.into())
         }
 
-        let operator = char('+')
-            .map(|_| add as fn(Expression, Expression) -> Expression)
-            .choice(char('-').map(|_| subtract as fn(Expression, Expression) -> Expression));
-        let parser = number.chain_left1(operator);
+        fn expression(input: &str) -> Option<(Expression, &str)> {
+            let operator = char('+')
+                .lexeme()
+                .map(|_| add as fn(Expression, Expression) -> Expression)
+                .choice(
+                    char('-')
+                        .lexeme()
+                        .map(|_| subtract as fn(Expression, Expression) -> Expression),
+                );
+            function(term).chain_left1(operator).parse(input)
+        }
+
+        fn term(input: &str) -> Option<(Expression, &str)> {
+            integer()
+                .lexeme()
+                .map(Expression::Number)
+                .choice(function(expression).between(char('(').lexeme(), char(')').lexeme()))
+                .parse(input)
+        }
+
+        let parser = function(expression);
+
         assert_eq!(
-            dbg!(parser.parse("+1+2-3")),
+            dbg!(parser.parse("(+1+2)-3")),
             Some((
                 Expression::Subtract(
                     Expression::Add(Expression::Number(1).into(), Expression::Number(2).into(),)
                         .into(),
                     Expression::Number(3).into(),
+                ),
+                ""
+            ))
+        );
+        assert_eq!(
+            dbg!(parser.parse("+1-(-2-3)")),
+            Some((
+                Expression::Subtract(
+                    Expression::Number(1).into(),
+                    Expression::Subtract(
+                        Expression::Number(-2).into(),
+                        Expression::Number(3).into(),
+                    )
+                    .into(),
                 ),
                 ""
             ))
