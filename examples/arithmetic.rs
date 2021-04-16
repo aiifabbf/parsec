@@ -8,6 +8,8 @@ enum Expression {
     Number(i64),
     Add(Box<Expression>, Box<Expression>),
     Subtract(Box<Expression>, Box<Expression>),
+    Multiply(Box<Expression>, Box<Expression>),
+    Divide(Box<Expression>, Box<Expression>),
 }
 
 fn add(v: Expression, w: Expression) -> Expression {
@@ -16,6 +18,14 @@ fn add(v: Expression, w: Expression) -> Expression {
 
 fn subtract(v: Expression, w: Expression) -> Expression {
     Expression::Subtract(v.into(), w.into())
+}
+
+fn multiply(v: Expression, w: Expression) -> Expression {
+    Expression::Multiply(v.into(), w.into())
+}
+
+fn divide(v: Expression, w: Expression) -> Expression {
+    Expression::Divide(v.into(), w.into())
 }
 
 // 按照自然思路会写出这样的文法
@@ -40,7 +50,20 @@ fn subtract(v: Expression, w: Expression) -> Expression {
 // operator := "+"
 //     | "-"
 // expression := term operator term ... term
-fn expression(input: &str) -> Option<(Expression, &str)> {
+// fn expression(input: &str) -> Option<(Expression, &str)> {
+//     let operator = char('+')
+//         .lexeme()
+//         .map(|_| add as fn(Expression, Expression) -> Expression)
+//         .choice(
+//             char('-')
+//                 .lexeme()
+//                 .map(|_| subtract as fn(Expression, Expression) -> Expression),
+//         );
+//     function(term).chain_left1(operator).parse(input)
+// }
+
+// 低优先级运算，比如加减
+fn level0(input: &str) -> Option<(Expression, &str)> {
     let operator = char('+')
         .lexeme()
         .map(|_| add as fn(Expression, Expression) -> Expression)
@@ -48,6 +71,19 @@ fn expression(input: &str) -> Option<(Expression, &str)> {
             char('-')
                 .lexeme()
                 .map(|_| subtract as fn(Expression, Expression) -> Expression),
+        );
+    function(level1).chain_left1(operator).parse(input)
+}
+
+// 高优先级运算符，比如乘除
+fn level1(input: &str) -> Option<(Expression, &str)> {
+    let operator = char('*')
+        .lexeme()
+        .map(|_| multiply as fn(Expression, Expression) -> Expression)
+        .choice(
+            char('/')
+                .lexeme()
+                .map(|_| divide as fn(Expression, Expression) -> Expression),
         );
     function(term).chain_left1(operator).parse(input)
 }
@@ -58,12 +94,14 @@ fn term(input: &str) -> Option<(Expression, &str)> {
     integer()
         .lexeme()
         .map(Expression::Number)
-        .choice(function(expression).between(char('(').lexeme(), char(')').lexeme()))
+        .choice(function(level0).between(char('(').lexeme(), char(')').lexeme()))
         .parse(input)
 }
 
+// 做法来自 https://stackoverflow.com/questions/56295777/right-way-to-parse-chain-of-various-binary-functions-with-parsec
+
 fn main() {
-    let parser = function(expression);
+    let parser = function(level0);
 
     assert_eq!(
         dbg!(parser.parse("(+1+2)-3")),
@@ -82,6 +120,27 @@ fn main() {
                 Expression::Number(1).into(),
                 Expression::Subtract(Expression::Number(-2).into(), Expression::Number(3).into(),)
                     .into(),
+            ),
+            ""
+        ))
+    );
+    assert_eq!(
+        dbg!(parser.parse("1 + 2 * 3")),
+        Some((
+            Expression::Add(
+                Expression::Number(1).into(),
+                Expression::Multiply(Expression::Number(2).into(), Expression::Number(3).into(),)
+                    .into()
+            ),
+            ""
+        ))
+    );
+    assert_eq!(
+        dbg!(parser.parse("(1 + 2) * 3")),
+        Some((
+            Expression::Multiply(
+                Expression::Add(Expression::Number(1).into(), Expression::Number(2).into(),).into(),
+                Expression::Number(3).into(),
             ),
             ""
         ))
