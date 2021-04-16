@@ -62,6 +62,9 @@ fn divide(v: Expression, w: Expression) -> Expression {
 //     function(term).chain_left1(operator).parse(input)
 // }
 
+// 下面用来处理运算符优先级的做法来自 https://stackoverflow.com/questions/56295777/right-way-to-parse-chain-of-various-binary-functions-with-parsec
+// 我也没理解……先拿来用再说
+
 // 低优先级运算，比如加减
 fn level0(input: &str) -> Option<(Expression, &str)> {
     let operator = char('+')
@@ -98,7 +101,17 @@ fn term(input: &str) -> Option<(Expression, &str)> {
         .parse(input)
 }
 
-// 做法来自 https://stackoverflow.com/questions/56295777/right-way-to-parse-chain-of-various-binary-functions-with-parsec
+impl Expression {
+    pub fn evaluate(&self) -> i64 {
+        match self {
+            Self::Number(v) => *v,
+            Self::Add(v, w) => v.evaluate() + w.evaluate(),
+            Self::Subtract(v, w) => v.evaluate() - w.evaluate(),
+            Self::Multiply(v, w) => v.evaluate() * w.evaluate(),
+            Self::Divide(v, w) => v.evaluate() / w.evaluate(),
+        }
+    }
+}
 
 fn main() {
     let parser = function(level0);
@@ -145,4 +158,9 @@ fn main() {
             ""
         ))
     );
+
+    let calculator = parser.map(|v| v.evaluate());
+
+    assert_eq!(dbg!(calculator.parse("(1 + 2) * 3")), Some((9, "")));
+    assert_eq!(dbg!(calculator.parse("1 + 2 * 3")), Some((7, "")));
 }
