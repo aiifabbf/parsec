@@ -1,5 +1,5 @@
 use parsec::char;
-use parsec::function;
+// use parsec::function; // 不需要这个啦，因为F where F: Fn(&str) -> Option<(T, &str)>本身就实现了Parser<T>
 use parsec::integer;
 use parsec::Parser;
 
@@ -67,37 +67,33 @@ fn divide(v: Expression, w: Expression) -> Expression {
 
 // 低优先级运算，比如加减
 fn level0(input: &str) -> Option<(Expression, &str)> {
+    let add = add as fn(Expression, Expression) -> Expression;
+    let subtract = subtract as fn(Expression, Expression) -> Expression;
     let operator = char('+')
         .lexeme()
-        .map(|_| add as fn(Expression, Expression) -> Expression)
-        .choice(
-            char('-')
-                .lexeme()
-                .map(|_| subtract as fn(Expression, Expression) -> Expression),
-        );
-    function(level1).chain_left1(operator).parse(input)
+        .map(|_| add)
+        .choice(char('-').lexeme().map(|_| subtract));
+    level1.chain_left1(operator).parse(input)
 }
 
 // 高优先级运算符，比如乘除
 fn level1(input: &str) -> Option<(Expression, &str)> {
+    let multiply = multiply as fn(Expression, Expression) -> Expression;
+    let divide = divide as fn(Expression, Expression) -> Expression;
     let operator = char('*')
         .lexeme()
-        .map(|_| multiply as fn(Expression, Expression) -> Expression)
-        .choice(
-            char('/')
-                .lexeme()
-                .map(|_| divide as fn(Expression, Expression) -> Expression),
-        );
-    function(term).chain_left1(operator).parse(input)
+        .map(|_| multiply)
+        .choice(char('/').lexeme().map(|_| divide));
+    term.chain_left1(operator).parse(input)
 }
 
 // term := integer
-//     | "(" expression ")"
+//     | "(" level0 ")"
 fn term(input: &str) -> Option<(Expression, &str)> {
     integer()
         .lexeme()
         .map(Expression::Number)
-        .choice(function(level0).between(char('(').lexeme(), char(')').lexeme()))
+        .choice(level0.between(char('(').lexeme(), char(')').lexeme()))
         .parse(input)
 }
 
@@ -114,7 +110,7 @@ impl Expression {
 }
 
 fn main() {
-    let parser = function(level0);
+    let parser = level0;
 
     assert_eq!(
         dbg!(parser.parse("(+1+2)-3")),
@@ -159,7 +155,7 @@ fn main() {
         ))
     );
 
-    let calculator = parser.map(|v| v.evaluate());
+    let calculator = parser.map(|v| v.evaluate()); // 只要map一下，parser就变interpreter了
 
     assert_eq!(dbg!(calculator.parse("(1 + 2) * 3")), Some((9, "")));
     assert_eq!(dbg!(calculator.parse("1 + 2 * 3")), Some((7, "")));

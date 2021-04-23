@@ -1,5 +1,6 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
+// use std::ops::BitOr; // 本来想实现p1 | p2这种的，无奈又遇到了unconstrained type parameter问题，暂时放一放
 use std::str::FromStr;
 
 pub trait Parser<T> {
@@ -44,7 +45,7 @@ pub trait Parser<T> {
         Choice(self, another)
     }
 
-    /// Parser<T1> -> Parser<T2>
+    /// Parser<T1> -> (T1 -> T2) -> Parser<T2>
     fn map<T2, F>(self, f: F) -> Map<Self, F, T>
     where
         Self: Sized,
@@ -53,6 +54,7 @@ pub trait Parser<T> {
         Map(self, f, PhantomData)
     }
 
+    /// Parser<T1> -> (T1 -> Parser<T2>) -> Parser<T2>
     // 其实我到现在还不明白这个and_then可以用在哪里……
     fn and_then<F, T2, P2>(self, f: F) -> AndThen<Self, F, T>
     where
@@ -324,6 +326,11 @@ pub fn whitespaces() -> Whitespaces {
     // space().many().map(|_: String| ())
 }
 
+/// 1 or more whitespace characters
+pub fn gap() -> impl Parser<()> + Clone {
+    whitespace().many1().map(|_: String| ())
+}
+
 /// 1 \n
 pub fn newline() -> Char {
     char('\n')
@@ -531,6 +538,20 @@ where
     }
 }
 
+// 这样竟然是不行的
+// impl<T, P1, P2> BitOr<P2> for P1
+// where
+//     P1: Parser<T>,
+//     P2: Parser<T>,
+// {
+//     type Output = Choice<P1, P2>;
+
+//     fn bitor(self, rhs: P2) -> Self::Output {
+//         self.choice(rhs)
+//     }
+// }
+// error[E0207]: the type parameter `T` is not constrained by the impl trait, self type, or predicates
+
 // 本来就是简简单单的写法
 // pub struct Map<P, F>(P, F);
 
@@ -691,17 +712,7 @@ where
 //         self.parse(input)
 //     }
 // }
-
-// 原来不用写三遍啊……
-impl<T, P> Parser<T> for P
-where
-    P: AsRef<dyn Parser<T>>,
-{
-    fn parse<'a>(&self, input: &'a str) -> Option<(T, &'a str)> {
-        // self.parse(input); // 不能这样写，会warning无限递归
-        Parser::<T>::parse(self.as_ref(), input)
-    }
-}
+// 这3个impl根本不用写，自动的
 
 #[derive(Clone)]
 pub struct Function<F>(F);
@@ -725,15 +736,18 @@ where
     Function(f)
 }
 
-// impl<T, F> Parser<T> for F
-// where
-//     F: Fn(&str) -> Option<(T, &str)>,
-// {
-//     fn parse<'a>(&self, input: &'a str) -> Option<(T, &'a str)> {
-//         (self)(input)
-//     }
-// }
-// 做不到，提示和AsRef那个impl冲突了
+// 梦想终于实现了！
+impl<T, F> Parser<T> for F
+where
+    F: Fn(&str) -> Option<(T, &str)>,
+{
+    fn parse<'a>(&self, input: &'a str) -> Option<(T, &'a str)> {
+        (self)(input)
+    }
+}
+
+// impl<T, P> Fn(&str) -> Option<(T, &str)> for P where P: Parser<T> {}
+// 不过暂时还不能这么做
 
 #[derive(Clone)]
 pub struct LookAhead<P>(P);
@@ -1144,10 +1158,10 @@ mod tests {
             }) // Parser<i32>
             .and_then(|v| {
                 if v == 0 {
-                    Box::new(satisfy(|c| c == 'a')) as Box<dyn Parser<char>>
+                    satisfy({ |c| c == 'a' } as fn(char) -> bool)
                 } else {
-                    Box::new(satisfy(|c| c == 'b')) as Box<dyn Parser<char>>
-                } // 这里为了体现closure是单例的，两个closure即使定义完全一样，也被认为是两种类型，if-else的两个臂不能是不同的类型，所以这里只能包装成trait object。然后又会有Box<dyn Trait> does not implement Trait的问题
+                    satisfy({ |c| c == 'b' } as fn(char) -> bool)
+                } // 这里为了体现closure是单例的，两个closure即使定义完全一样，也被认为是两种类型，if-else的两个臂不能是不同的类型，所以这里只能要么包装成trait object（然后又会有Box<dyn Trait> does not implement Trait的问题）、要么像这样把不捕获环境的closure强行转换成函数指针（reference里说这应该是自动的……）
             }) // Parser<char>
             .many() // Parser<String>或者Parser<Vec<char>>
             .map(|v: String| v);
@@ -1180,11 +1194,10 @@ mod tests {
 
     #[test]
     fn digits_between_letters() {
-        use std::sync::Arc;
-
         let input = "abba12234xyzz";
-        let letters =
-            Arc::new(satisfy(|c| c.is_ascii_alphabetic()).many()) as Arc<dyn Parser<String>>; // 为什么这里非要dyn，我不明白
+        let letters = satisfy(|c| c.is_ascii_alphabetic())
+            .many()
+            .map(|v: String| v);
         let digits = satisfy(|c| c.is_digit(10)).many().map(|v: String| v);
         let parser = digits.between(letters.clone(), letters);
         assert_eq!(dbg!(parser.parse(input)), Some(("12234".to_owned(), "")));
@@ -1220,13 +1233,22 @@ mod tests {
 
     #[test]
     fn closure_parser() {
-        let parser = function(|input: &str| -> Option<(char, &str)> {
+        let parser: fn(&str) -> Option<(char, &str)> = |input: &str| -> Option<(char, &str)> {
             if let Some(c) = input.chars().next() {
                 Some((c, input))
             } else {
                 None
             }
-        }); // let parser = char('a').look_ahead();
+        }; // let parser = char('a').look_ahead();
+
+        // 或者套一个function在外面
+        // let parser = function(|input: &str| -> Option<(char, &str)> {
+        //     if let Some(c) = input.chars().next() {
+        //         Some((c, input))
+        //     } else {
+        //         None
+        //     }
+        // });
         assert_eq!(dbg!(parser.parse("abc")), Some(('a', "abc")));
     }
 
@@ -1245,14 +1267,16 @@ mod tests {
                 .choice(
                     string("()")
                         .map(|_| ())
-                        .choice(function(s).between(char('('), char(')')))
+                        .choice(s.between(char('('), char(')')))
                         .many()
                         .map(|_| ()),
                 )
                 .parse(input)
-        } // 很想把Function(s)外面的Function去掉，直接让Fn(&str) -> Option<(T, &a)>也实现Parser<T>
+        }
+        // 很想把Function(s)外面的Function去掉，直接让Fn(&str) -> Option<(T, &a)>也实现Parser<T>
+        // 实现了
 
-        let parser = function(s).right(eof()); // 加一个right(eof())是为了识别整个字符串。如果parse之后还剩下一段字符串，不算是valid parentheses的
+        let parser = s.right(eof()); // 加一个right(eof())是为了识别整个字符串。如果parse之后还剩下一段字符串，不算是valid parentheses的
         assert_eq!(dbg!(parser.parse("")), Some(((), "")));
         assert_eq!(dbg!(parser.parse("((()))")), Some(((), "")));
         assert_eq!(dbg!(parser.parse("((()))()")), Some(((), "")));
@@ -1354,69 +1378,5 @@ mod tests {
         assert_eq!(dbg!(parser.parse("-1-2-3")), Some((0, ""))); // (-1) - ((-2) - 3)
     }
 
-    #[test]
-    fn ast() {
-        #[derive(Debug, PartialEq, Eq)]
-        enum Expression {
-            Number(i64),
-            Add(Box<Expression>, Box<Expression>),
-            Subtract(Box<Expression>, Box<Expression>),
-        }
-
-        fn add(v: Expression, w: Expression) -> Expression {
-            Expression::Add(v.into(), w.into())
-        } // 这样真的好难看……如果能直接在map里传入variant constructor就好了，就很优雅，而且Rust里的enum variant确实是个函数。但是这样没法处理Box。
-
-        fn subtract(v: Expression, w: Expression) -> Expression {
-            Expression::Subtract(v.into(), w.into())
-        }
-
-        fn expression(input: &str) -> Option<(Expression, &str)> {
-            let operator = char('+')
-                .lexeme()
-                .map(|_| add as fn(Expression, Expression) -> Expression)
-                .choice(
-                    char('-')
-                        .lexeme()
-                        .map(|_| subtract as fn(Expression, Expression) -> Expression),
-                );
-            function(term).chain_left1(operator).parse(input)
-        }
-
-        fn term(input: &str) -> Option<(Expression, &str)> {
-            integer()
-                .lexeme()
-                .map(Expression::Number)
-                .choice(function(expression).between(char('(').lexeme(), char(')').lexeme()))
-                .parse(input)
-        }
-
-        let parser = function(expression);
-
-        assert_eq!(
-            dbg!(parser.parse("(+1+2)-3")),
-            Some((
-                Expression::Subtract(
-                    Expression::Add(Expression::Number(1).into(), Expression::Number(2).into(),)
-                        .into(),
-                    Expression::Number(3).into(),
-                ),
-                ""
-            ))
-        );
-        assert_eq!(
-            dbg!(parser.parse("+1-(-2-3)")),
-            Some((
-                Expression::Subtract(
-                    Expression::Number(1).into(),
-                    Expression::Subtract(
-                        Expression::Number(-2).into(),
-                        Expression::Number(3).into(),
-                    )
-                    .into(),
-                ),
-                ""
-            ))
-        );
-    }
+    // 更复杂的全功能计算器在examples/arithmetic.rs里
 }
