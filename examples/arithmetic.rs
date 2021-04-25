@@ -90,7 +90,7 @@ fn level1(input: &str) -> Option<(Expression, &str)> {
 // term := integer
 //     | "(" level0 ")"
 fn term(input: &str) -> Option<(Expression, &str)> {
-    integer()
+    integer
         .lexeme()
         .map(Expression::Number)
         .choice(level0.between(char('(').lexeme(), char(')').lexeme()))

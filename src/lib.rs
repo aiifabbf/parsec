@@ -46,7 +46,7 @@ pub trait Parser<T> {
     }
 
     /// Parser<T1> -> (T1 -> T2) -> Parser<T2>
-    fn map<T2, F>(self, f: F) -> Map<Self, F, T>
+    fn map<T2, F>(self, f: F) -> Map<T, Self, F>
     where
         Self: Sized,
         F: Fn(T) -> T2,
@@ -56,7 +56,7 @@ pub trait Parser<T> {
 
     /// Parser<T1> -> (T1 -> Parser<T2>) -> Parser<T2>
     // 其实我到现在还不明白这个and_then可以用在哪里……
-    fn and_then<F, T2, P2>(self, f: F) -> AndThen<Self, F, T>
+    fn and_then<F, T2, P2>(self, f: F) -> AndThen<T, Self, F>
     where
         Self: Sized,
         F: Fn(T) -> P2,
@@ -191,11 +191,10 @@ impl Parser<char> for Any {
 }
 
 /// any 1 character
-pub fn any() -> Any {
-    Any // 其实这是个unit type，根本不占空间，我怀疑这里会自动优化
-
-    // Satisfy(|c: &char| true) // 也可以用Satisfy构造，但是语义上要占用一个closure的空间？
+pub fn any(s: &str) -> Option<(char, &str)> {
+    Any.parse(s)
 }
+
 // 天哪，我才发现函数签名里面返回值类型写impl Trait和写具体的P类型竟然是不同的！写impl Trait的话，会导致f()只能用Trait里的方法，无法发现P的方法。
 // https://stackoverflow.com/questions/64693182/rust-expected-type-found-opaque-type
 // 可是如果返回值类型真的复杂到没法写出来呢？或者有些情况根本就写不出类型（比如closure）？别急，你可以写impl Trait + Clone。下面一大堆用satisfy实现的函数就是这样做的。
@@ -214,8 +213,8 @@ impl Parser<()> for Eof {
 }
 
 /// only succeed when input is empty
-pub fn eof() -> Eof {
-    Eof
+pub fn eof(s: &str) -> Option<((), &str)> {
+    Eof.parse(s)
 }
 
 #[derive(Clone)]
@@ -229,8 +228,8 @@ impl Parser<()> for Epsilon {
 
 // 不知道这个定义对不对
 /// always succeed, consume nothing
-pub fn epsilon() -> Epsilon {
-    Epsilon
+pub fn epsilon(s: &str) -> Option<((), &str)> {
+    Epsilon.parse(s)
 }
 
 // #[derive(Clone)]
@@ -305,9 +304,8 @@ pub fn char(c: char) -> Char {
 }
 
 /// 1 whitespace character
-pub fn whitespace() -> impl Parser<char> + Clone {
-    // 比如这里就没法写出返回值的类型，所以只能写impl Trait + Clone
-    satisfy(|c| c.is_whitespace())
+pub fn whitespace(s: &str) -> Option<(char, &str)> {
+    satisfy(|c| c.is_whitespace()).parse(s)
 }
 
 #[derive(Clone)]
@@ -320,50 +318,48 @@ impl Parser<()> for Whitespaces {
 }
 
 /// 0 or more whitespace characters
-pub fn whitespaces() -> Whitespaces {
-    Whitespaces
-    // function(|input| Some(((), input.trim_start())))
-    // space().many().map(|_: String| ())
+pub fn whitespaces(s: &str) -> Option<((), &str)> {
+    Whitespaces.parse(s)
 }
 
 /// 1 or more whitespace characters
-pub fn gap() -> impl Parser<()> + Clone {
-    whitespace().many1().map(|_: String| ())
+pub fn gap(s: &str) -> Option<((), &str)> {
+    whitespace.many1().map(|_: String| ()).parse(s)
 }
 
 /// 1 \n
-pub fn newline() -> Char {
-    char('\n')
+pub fn newline(s: &str) -> Option<(char, &str)> {
+    char('\n').parse(s)
 }
 
 /// 1 \t
-pub fn tab() -> Char {
-    char('\t')
+pub fn tab(s: &str) -> Option<(char, &str)> {
+    char('\t').parse(s)
 }
 
 /// 1 uppercase character
-pub fn upper() -> impl Parser<char> + Clone {
-    satisfy(|c| c.is_uppercase())
+pub fn upper(s: &str) -> Option<(char, &str)> {
+    satisfy(|c| c.is_uppercase()).parse(s)
 }
 
 /// 1 lowercase character
-pub fn lower() -> impl Parser<char> + Clone {
-    satisfy(|c| c.is_lowercase())
+pub fn lower(s: &str) -> Option<(char, &str)> {
+    satisfy(|c| c.is_lowercase()).parse(s)
 }
 
 /// 1 alphanumeric character
-pub fn alphanumeric() -> impl Parser<char> + Clone {
-    satisfy(|c| c.is_alphanumeric())
+pub fn alphanumeric(s: &str) -> Option<(char, &str)> {
+    satisfy(|c| c.is_alphanumeric()).parse(s)
 }
 
 /// '0'..='9'
-pub fn digit() -> impl Parser<char> + Clone {
-    satisfy(|c| c.is_digit(10))
+pub fn digit(s: &str) -> Option<(char, &str)> {
+    satisfy(|c| c.is_digit(10)).parse(s)
 }
 
 /// '0'..='9', 'a'..='f' and 'A'..='F'
-pub fn hex_digit() -> impl Parser<char> + Clone {
-    satisfy(|c| c.is_digit(16))
+pub fn hex_digit(s: &str) -> Option<(char, &str)> {
+    satisfy(|c| c.is_digit(16)).parse(s)
 }
 
 /// 1 character that is an element of the char slice
@@ -557,14 +553,14 @@ where
 
 // 非要搞成这样，就为了不出现没用过的泛型参数
 #[derive(Clone)]
-pub struct Map<P, F, T>(P, F, PhantomData<T>);
+pub struct Map<T, P, F>(P, F, PhantomData<T>);
 
 // 讨论
 // https://www.reddit.com/r/rust/comments/fkulrf/quick_question_about_unused_generic_type_parameter/
 // https://stackoverflow.com/questions/28123445/is-there-any-way-to-work-around-an-unused-type-parameter
 // https://github.com/rust-lang/rust/issues/23246
 
-impl<T1, P1, T2, F> Parser<T2> for Map<P1, F, T1>
+impl<T1, P1, T2, F> Parser<T2> for Map<T1, P1, F>
 where
     P1: Parser<T1>,
     F: Fn(T1) -> T2,
@@ -591,9 +587,9 @@ where
 // 有map了，应该也不用到这个了
 
 #[derive(Clone)]
-pub struct AndThen<P, F, T>(P, F, PhantomData<T>);
+pub struct AndThen<T, P, F>(P, F, PhantomData<T>);
 
-impl<T1, P1, T2, P2, F> Parser<T2> for AndThen<P1, F, T1>
+impl<T1, P1, T2, P2, F> Parser<T2> for AndThen<T1, P1, F>
 where
     P1: Parser<T1>,
     P2: Parser<T2>,
@@ -766,51 +762,39 @@ where
 }
 
 pub fn symbol(s: &str) -> impl Parser<&str> + Clone {
-    Str(s).left(whitespaces())
+    Str(s).left(whitespaces)
 }
 // 觉得这个好像没什么用orz
 
 // 不限定parse出来是u64或者其他类型，方便和无限位精度库梦幻联动
-pub fn decimal<T, E>() -> impl Parser<T>
+pub fn decimal<T, E>(input: &str) -> Option<(T, &str)>
 where
     T: FromStr<Err = E>,
     E: Debug, // 这好烦
 {
-    digit().many1().map(|v: String| v.parse().unwrap()) // ...many1()之后无法确定是Parser<String>还是Parser<Vec<T>>，可以用map强行让编译器推断出前面是Parser<String>
+    digit
+        .many1()
+        .map(|v: String| v.parse().unwrap())
+        .parse(input) // ...many1()之后无法确定是Parser<String>还是Parser<Vec<T>>，可以用map强行让编译器推断出前面是Parser<String>
 }
 // 比如rug的无限精度Integer也实现了FromStr，所以可以直接parse出这个
 
-fn sign() -> Choice<Char, Char> {
-    char('+').choice(char('-'))
+pub fn sign(s: &str) -> Option<(char, &str)> {
+    Choice(Char('+'), Char('-')).parse(s)
 }
 
-// pub fn integer<T, E>() -> impl Parser<T>
-pub fn integer<T, E>() -> Function<fn(&str) -> Option<(T, &str)>>
+pub fn integer<T, E>(input: &str) -> Option<(T, &str)>
 where
     T: FromStr<Err = E>,
     E: Debug,
 {
-    fn f<T, E>(input: &str) -> Option<(T, &str)>
-    where
-        T: FromStr<Err = E>,
-        E: Debug,
-    {
-        let (sign, input) = sign()
-            .left(whitespaces())
-            .parse(input)
-            .unwrap_or(('+', input));
-        let (digits, input) = satisfy(|c| c.is_digit(10))
-            .many1()
-            .map(|v: String| v)
-            .parse(input)?;
-        if let Ok(v) = format!("{}{}", sign, digits).parse::<T>() {
-            Some((v, input))
-        } else {
-            None
-        }
+    let (sign_, input) = sign.left(whitespaces).parse(input).unwrap_or(('+', input));
+    let (digits, input) = digit.many1().map(|v: String| v).parse(input)?;
+    if let Ok(v) = format!("{}{}", sign_, digits).parse::<T>() {
+        Some((v, input))
+    } else {
+        None
     }
-
-    function(f)
 }
 // Haskell parsec的integer是lexeme的，而且可以parse十六进制
 
@@ -1076,7 +1060,6 @@ mod tests {
     #[test]
     fn many_parse_number() {
         let input = "1234";
-        let digit = satisfy(|c| c.is_digit(10));
         let parser = digit.many();
         assert_eq!(dbg!(parser.parse(input)), Some(("1234".to_owned(), "")));
     }
@@ -1084,7 +1067,6 @@ mod tests {
     #[test]
     fn many_parse_number_prefix() {
         let input = "1234abc";
-        let digit = satisfy(|c| c.is_digit(10));
         let parser = digit.many();
         assert_eq!(dbg!(parser.parse(input)), Some(("1234".to_owned(), "abc"))); // 很神奇，这里明明会有歧义，parser究竟是Parser<String>还是Parser<Vec<char>>
         assert_eq!(
@@ -1096,7 +1078,6 @@ mod tests {
     #[test]
     fn many_parse_number_fail() {
         let input = "abc";
-        let digit = satisfy(|c| c.is_digit(10));
         let parser = digit.many();
         assert_eq!(dbg!(parser.parse(input)), Some(("".to_owned(), "abc")));
     }
@@ -1104,7 +1085,6 @@ mod tests {
     #[test]
     fn many1_parse_number() {
         let input = "1abc";
-        let digit = satisfy(|c| c.is_digit(10));
         let parser = digit.many1();
         assert_eq!(dbg!(parser.parse(input)), Some(("1".to_owned(), "abc")));
     }
@@ -1112,7 +1092,6 @@ mod tests {
     #[test]
     fn many1_parse_number_fail() {
         let input = "abc";
-        let digit = satisfy(|c| c.is_digit(10));
         let parser = digit.many1();
         assert_eq!(dbg!(Parser::<String>::parse(&parser, input)), None);
         // assert_eq!(
@@ -1129,7 +1108,6 @@ mod tests {
     fn choice_parse_alpha_numeric() {
         let input = "a1b2我c3";
         let alpha = satisfy(|c| c.is_ascii_alphabetic());
-        let digit = satisfy(|c| c.is_ascii_digit());
         let parser = alpha.choice(digit).many();
         assert_eq!(dbg!(parser.parse(input)), Some(("a1b2".to_owned(), "我c3")));
     }
@@ -1144,7 +1122,7 @@ mod tests {
     #[test]
     fn whitespace_succeed() {
         let input = "   abc";
-        let parser = whitespaces();
+        let parser = whitespaces;
         assert_eq!(dbg!(parser.parse(input)), Some(((), "abc")));
     }
 
@@ -1220,14 +1198,14 @@ mod tests {
     #[test]
     fn epsilon_empty_string() {
         let input = "";
-        let parser = epsilon();
+        let parser = epsilon;
         assert_eq!(dbg!(parser.parse(input)), Some(((), "")));
     }
 
     #[test]
     fn epsilon_non_empty_string() {
         let input = "123";
-        let parser = epsilon();
+        let parser = epsilon;
         assert_eq!(dbg!(parser.parse(input)), Some(((), "123")));
     }
 
@@ -1263,20 +1241,19 @@ mod tests {
         // p := "()" | "(" s ")"
         // 但其实也有区别，因为choice是有顺序的
         fn s(input: &str) -> Option<((), &str)> {
-            eof()
-                .choice(
-                    string("()")
-                        .map(|_| ())
-                        .choice(s.between(char('('), char(')')))
-                        .many()
-                        .map(|_| ()),
-                )
-                .parse(input)
+            eof.choice(
+                string("()")
+                    .map(|_| ())
+                    .choice(s.between(char('('), char(')')))
+                    .many()
+                    .map(|_| ()),
+            )
+            .parse(input)
         }
         // 很想把Function(s)外面的Function去掉，直接让Fn(&str) -> Option<(T, &a)>也实现Parser<T>
         // 实现了
 
-        let parser = s.right(eof()); // 加一个right(eof())是为了识别整个字符串。如果parse之后还剩下一段字符串，不算是valid parentheses的
+        let parser = s.right(eof); // 加一个right(eof())是为了识别整个字符串。如果parse之后还剩下一段字符串，不算是valid parentheses的
         assert_eq!(dbg!(parser.parse("")), Some(((), "")));
         assert_eq!(dbg!(parser.parse("((()))")), Some(((), "")));
         assert_eq!(dbg!(parser.parse("((()))()")), Some(((), "")));
@@ -1293,7 +1270,7 @@ mod tests {
 
     #[test]
     fn parse_decimal() {
-        let parser = decimal();
+        let parser = decimal;
         assert_eq!(dbg!(parser.parse("1234")), Some((1234, "")));
         assert_eq!(dbg!(parser.parse("0")), Some((0, "")));
         assert_eq!(dbg!(parser.parse("1234abc")), Some((1234, "abc")));
@@ -1302,7 +1279,7 @@ mod tests {
 
     #[test]
     fn parse_integer() {
-        let parser = integer().lexeme();
+        let parser = integer.lexeme();
         assert_eq!(dbg!(parser.parse("+1234")), Some((1234, "")));
         assert_eq!(dbg!(parser.parse("+  1234")), Some((1234, "")));
         assert_eq!(dbg!(parser.parse("1234  ")), Some((1234, "")));
@@ -1316,7 +1293,7 @@ mod tests {
 
     #[test]
     fn comma_separated_integers() {
-        let parser = integer().lexeme().separated_by(char(',').lexeme());
+        let parser = integer.lexeme().separated_by(char(',').lexeme());
         assert_eq!(dbg!(parser.parse("1,2,3")), Some((vec![1, 2, 3], "")));
         assert_eq!(dbg!(parser.parse("1,2,3,")), Some((vec![1, 2, 3], ",")));
         assert_eq!(dbg!(parser.parse("+1, -2, 3")), Some((vec![1, -2, 3], "")));
@@ -1332,7 +1309,7 @@ mod tests {
         //     .lexeme()
         //     .separated_by(char(',').lexeme())
         //     .left(char(',').optional());
-        let list = integer().lexeme().separated_end_by(char(',').lexeme());
+        let list = integer.lexeme().separated_end_by(char(',').lexeme());
         let parser = list.between(string("vec![").lexeme(), string("]"));
         assert_eq!(dbg!(parser.parse("vec![1,2,3]")), Some((vec![1, 2, 3], "")));
         assert_eq!(
@@ -1351,7 +1328,7 @@ mod tests {
 
     #[test]
     fn evaluate() {
-        let number = integer().lexeme().map(|v: i64| v);
+        let number = integer.lexeme().map(|v: i64| v);
 
         fn add(v: i64, w: i64) -> i64 {
             v + w
